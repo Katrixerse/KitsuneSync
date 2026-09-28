@@ -1,0 +1,147 @@
+@import "tailwindcss";
+
+@theme {
+  --color-void: #07070d;
+  --color-panel: #10101c;
+  --color-panel-2: #171728;
+  --color-line: #2a2a45;
+  --color-ink: #e8e8f4;
+  --color-mute: #8b8ba7;
+  --color-neon-pink: #ff2a6d;
+  --color-neon-cyan: #05d9e8;
+  --color-neon-yellow: #f9f002;
+  --color-neon-violet: #9d4dff;
+  --color-neon-green: #39ff88;
+
+  --font-display: var(--font-chakra), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+  --font-sans: var(--font-chakra), ui-sans-serif, system-ui, sans-serif;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-void);
+  background-image:
+    radial-gradient(ellipse at top, rgb(157 77 255 / 0.12), transparent 60%),
+    linear-gradient(rgb(5 217 232 / 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(5 217 232 / 0.035) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    32px 32px,
+    32px 32px;
+  background-attachment: fixed;
+  color: var(--color-ink);
+}
+
+::selection {
+  background: var(--color-neon-pink);
+  color: var(--color-void);
+}
+
+@layer components {
+  .panel {
+    @apply relative border border-line bg-panel/85 backdrop-blur-sm;
+    clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+  }
+
+  .label {
+    @apply font-mono text-[11px] uppercase tracking-[0.2em] text-mute;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 border px-4 py-2 font-mono text-xs font-semibold uppercase tracking-widest transition disabled:cursor-not-allowed disabled:opacity-40;
+    clip-path: polygon(0 0, calc(100% - 8px) 0, 100% 8px, 100% 100%, 8px 100%, 0 calc(100% - 8px));
+  }
+  .btn-primary {
+    @apply border-neon-pink bg-neon-pink text-void hover:bg-neon-pink/85;
+  }
+  .btn-ghost {
+    @apply border-line text-ink hover:border-neon-cyan hover:text-neon-cyan;
+  }
+
+  .input {
+    @apply w-full border border-line bg-void/70 px-3 py-2 font-mono text-sm text-ink outline-none placeholder:text-mute/60 focus:border-neon-cyan;
+  }
+
+  .glitch-text {
+    text-shadow:
+      2px 0 rgb(255 42 109 / 0.7),
+      -2px 0 rgb(5 217 232 / 0.7);
+  }
+}
+
+.scanlines {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgb(255 255 255 / 0.04) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+.holo {
+  background: linear-gradient(
+    115deg,
+    transparent 20%,
+    rgb(5 217 232 / 0.18) 35%,
+    rgb(255 42 109 / 0.18) 50%,
+    rgb(249 240 2 / 0.12) 62%,
+    transparent 80%
+  );
+  background-size: 250% 100%;
+  animation: holo-shift 7s ease-in-out infinite;
+  mix-blend-mode: screen;
+}
+
+@keyframes holo-shift {
+  0%,
+  100% {
+    background-position: 0% 0;
+  }
+  50% {
+    background-position: 100% 0;
+  }
+}
+
+@keyframes blink {
+  0%,
+  92%,
+  100% {
+    transform: scaleY(1);
+  }
+  95% {
+    transform: scaleY(0.1);
+  }
+}
+
+.cat-eye {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: blink 5s infinite;
+}
+
+@keyframes tail {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(10deg);
+  }
+}
+
+.cat-tail {
+  transform-box: fill-box;
+  transform-origin: 0% 100%;
+  animation: tail 3s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .holo,
+  .cat-eye,
+  .cat-tail {
+    animation: none;
+  }
+}
