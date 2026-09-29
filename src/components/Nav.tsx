@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useKitsune } from "@/lib/store";
+import { useKitsune, useSaveError } from "@/lib/store";
 
 const LINKS = [
   { href: "/dashboard", label: "ID" },
@@ -15,6 +15,7 @@ const LINKS = [
 export function Nav() {
   const pathname = usePathname();
   const { library } = useKitsune();
+  const saveError = useSaveError();
 
   return (
     <header className="sticky top-0 z-30 border-b border-line/70 bg-void/85 backdrop-blur">
@@ -43,6 +44,11 @@ export function Nav() {
             );
           })}
         </ul>
+        {saveError && (
+          <span role="alert" className="font-mono text-[11px] text-neon-pink">
+            ✖ {saveError}
+          </span>
+        )}
         {library && (
           <span className="hidden font-mono text-[11px] text-mute md:inline">
             @{library.user.name}

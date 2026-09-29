@@ -7,32 +7,44 @@ A Next.js dashboard that syncs your [AniList](https://anilist.co) anime and mang
 - **Cyberpunk ID card**: your stats as a Night City ID with a role, a level, genre "implants" and a scannable-looking barcode.
 - **Cat mascot**: a visor-wearing cat reads your list and comments on your taste (generous scorer? contrarian? 40 gaps on your shelf?).
 
-No login and no API token. It reads public AniList lists, and your shelf and wishlist stay in your browser.
+No login and no API token. It reads public AniList lists, and your shelf and wishlist are saved in PostgreSQL under an anonymous profile tied to your browser.
 
-## Try it
+## Run it with Docker
 
 ```bash
-npm install
-npm run dev
+docker compose up --build
 ```
 
 Open http://localhost:3000, then enter an AniList username or press **Try demo** to load a sample profile with a partly filled shelf.
 
+This starts PostgreSQL 18 (data in the `pgdata` volume) and the app. The schema is created on first start. To change the database password or ports, set `POSTGRES_PASSWORD`, `POSTGRES_PORT` or `APP_PORT` in a `.env` file next to `compose.yaml`.
+
+## Develop
+
+```bash
+docker compose up -d db          # just the database, on localhost:5432
+cp .env.example .env.local       # DATABASE_URL for the dev server
+npm install
+npm run dev
+```
+
 ## How it works
 
 ```
-Browser ──GET /api/anilist?user=name──▶ Route handler ──GraphQL──▶ graphql.anilist.co
-   │                                         (normalizes, maps errors)
-   ▼
-localStorage  { library, shelf, wishlist }
-   │
-   ├─ lib/shelf.ts     volume ownership, gaps, ranges ("1–3, 5")
-   ├─ lib/wishlist.ts  builds the wishlist from shelf + manga list
-   └─ lib/profile.ts   stats, role, level, cat commentary
+Browser ──Server Actions──▶ Next.js server ──GraphQL──▶ graphql.anilist.co
+   ▲  (optimistic store)          │
+   │                              ▼
+   └──── layout render ◀──── PostgreSQL  profiles · libraries · shelf_series
+                                          wishlist_manual · wishlist_dismissed
+   lib/shelf.ts     volume ownership, gaps, ranges ("1–3, 5")
+   lib/wishlist.ts  builds the wishlist from shelf + manga list
+   lib/profile.ts   stats, role, level, cat commentary
 ```
 
-- **Sync**: `src/app/api/anilist/route.ts` sends one GraphQL request that fetches both `MediaListCollection`s, then flattens them (skipping custom-list duplicates) into a small `Library` shape. Unknown users, private lists and rate limits come back as readable errors.
-- **Storage**: `src/lib/store.ts` is a tiny external store on top of `localStorage`, read through `useSyncExternalStore`, so the server render and hydration stay consistent and tabs stay in sync. Re-syncing refreshes titles, covers and totals on the shelf without touching owned volumes.
+- **Sync**: `syncLibraryAction` in `src/app/actions.ts` calls `src/lib/anilist/client.ts`, which sends one GraphQL request that fetches both `MediaListCollection`s, then flattens them (skipping custom-list duplicates) into a small `Library` shape. Unknown users, private lists and rate limits come back as readable errors. The library is stored as one `jsonb` row per profile.
+- **Profiles**: there are no accounts. The first save creates a profile with a random id and stores it in an httpOnly cookie (`src/lib/session.ts`). Use Settings → Export/Import to move a shelf to another browser.
+- **Storage**: the root layout loads the profile from Postgres and seeds `src/lib/store.ts`, a small external store read through `useSyncExternalStore`, so pages render with your data straight away. Edits update the store immediately and are saved through Server Actions, which validate every input (`src/lib/validate.ts`). If a save fails, the store reloads what the server has and the nav shows an error. Re-syncing refreshes titles, covers and totals on the shelf without touching owned volumes.
+- **Schema**: migrations live in `src/lib/db/migrate.ts` and run on server start from `src/instrumentation.ts`, guarded by an advisory lock.
 - **Wishlist rules** (`src/lib/wishlist.ts`), highest priority first:
   1. *Fill the gaps*: volumes missing below the highest volume you own.
   2. *Next volumes*: released volumes past the end of your shelf. For ongoing series with no known total, your AniList volume progress is used as the hint.
@@ -49,22 +61,24 @@ localStorage  { library, shelf, wishlist }
 | --- | --- |
 | `npm run dev` | Dev server |
 | `npm run build` / `npm start` | Production build / serve |
-| `npm test` | Unit tests (Vitest) for sync normalization, shelf, wishlist and profile logic |
+| `npm test` | Unit tests (Vitest) for sync normalization, validation, shelf, wishlist and profile logic. Database tests run too when `DATABASE_URL` is set |
 | `npm run lint` | ESLint |
 | `npm run typecheck` | Generates Next route types, then runs `tsc` |
 
-CI runs lint, typecheck, tests and a build on every push and pull request.
+CI runs lint, typecheck, tests (against a Postgres service) and a build on every push and pull request, and checks that the Docker image builds.
 
 ## Stack
 
-Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS 4 · Vitest. No database: deploy anywhere that runs Next.js (Vercel works with zero config).
+Next.js 16 (App Router, standalone output) · React 19 · TypeScript · Tailwind CSS 4 · PostgreSQL 18 via `pg` · Docker Compose · Vitest.
+
+If you serve it over HTTPS behind a reverse proxy, make sure the proxy sends `X-Forwarded-Proto` so the profile cookie is marked `Secure`.
 
 ## Roadmap
 
 - [ ] AniList OAuth to read private lists and write progress back
 - [ ] Export the ID card as a PNG to share
 - [ ] ISBN barcode scanning to add volumes from your phone camera
-- [ ] Optional cloud sync for the shelf (currently JSON export/import in Settings)
+- [ ] Link a profile across devices (currently JSON export/import in Settings)
 - [ ] Release alerts for series on your shelf
 
 ## Credits

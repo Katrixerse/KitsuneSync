@@ -35,10 +35,20 @@ export function SyncForm({ defaultUser = "", redirectTo, showDemo = true }: Sync
     }
   }
 
-  function onDemo() {
-    loadDemo();
-    if (redirectTo) router.push(redirectTo);
-    else setDone("Demo data loaded.");
+  async function onDemo() {
+    setBusy(true);
+    setError(null);
+    setDone(null);
+    try {
+      await loadDemo();
+      if (redirectTo) router.push(redirectTo);
+      else setDone("Demo data loaded.");
+    } catch (err) {
+      console.error(err);
+      setError("Couldn't load the demo. Is the database up?");
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (

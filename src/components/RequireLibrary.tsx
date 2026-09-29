@@ -14,10 +14,6 @@ export function RequireLibrary({
 }) {
   const state = useKitsune();
 
-  if (!state.hydrated) {
-    return <div className="panel h-64 animate-pulse" aria-busy="true" />;
-  }
-
   if (!state.library) {
     return (
       <div className="panel mx-auto flex max-w-xl flex-col items-center gap-4 p-8 text-center">

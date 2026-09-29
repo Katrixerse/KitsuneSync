@@ -5,7 +5,7 @@ import { SyncForm } from "@/components/SyncForm";
 import { exportBackup, importBackup, resetAll, useKitsune } from "@/lib/store";
 
 export function Settings() {
-  const { library, hydrated } = useKitsune();
+  const { library } = useKitsune();
   const fileRef = useRef<HTMLInputElement>(null);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -37,7 +37,7 @@ export function Settings() {
 
       <section className="panel p-5">
         <h2 className="label mb-3">AniList sync</h2>
-        {hydrated && library && (
+        {library && (
           <p className="mb-4 text-sm text-mute">
             Last synced <span className="text-ink">@{library.user.name}</span>
             {library.demo && " (demo data)"} on {new Date(library.syncedAt).toLocaleString()}.
@@ -49,8 +49,8 @@ export function Settings() {
       <section className="panel p-5">
         <h2 className="label mb-3">Backup</h2>
         <p className="mb-4 text-sm text-mute">
-          Your shelf and wishlist are stored only in this browser. Export a backup to move them to another device or
-          keep them safe. AniList lists aren&apos;t included; just sync again.
+          Your shelf and wishlist are saved on the server, tied to this browser. Export a backup to move them to
+          another device or keep them safe. AniList lists aren&apos;t included; just sync again.
         </p>
         <div className="flex flex-wrap gap-2">
           <button type="button" className="btn btn-ghost" onClick={download}>
@@ -68,14 +68,16 @@ export function Settings() {
 
       <section className="panel border-neon-pink/40 p-5">
         <h2 className="label mb-3 !text-neon-pink">Danger zone</h2>
-        <p className="mb-4 text-sm text-mute">Wipes the synced lists, your shelf and your wishlist from this browser.</p>
+        <p className="mb-4 text-sm text-mute">
+          Deletes the synced lists, your shelf and your wishlist from the server, and forgets this browser.
+        </p>
         <button
           type="button"
           className="btn border-neon-pink text-neon-pink hover:bg-neon-pink/10"
           onClick={() => {
-            if (confirm("Erase all KitsuneSync data from this browser?")) {
+            if (confirm("Erase all KitsuneSync data for this browser?")) {
               resetAll();
-              setMessage({ ok: true, text: "All local data erased." });
+              setMessage({ ok: true, text: "All data erased." });
             }
           }}
         >
