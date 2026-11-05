@@ -4,7 +4,7 @@ A Next.js dashboard that syncs your [AniList](https://anilist.co) anime and mang
 
 - **Physical manga shelf**: track which volumes you actually own, volume by volume, with gaps highlighted and editions (standard, omnibus, deluxe, box set) logged.
 - **Auto-filling wishlist**: missing volumes, newly released volumes, highly rated manga you don't own yet, and your plan-to-read list, queued up automatically.
-- **Cyberpunk ID card**: your stats as a Night City ID with a role, a level, genre "implants" and a scannable-looking barcode.
+- **Cyberpunk ID card**: your stats as a Night City ID with a role, a level, genre "implants" and a scannable-looking barcode, downloadable as a PNG.
 - **Cat mascot**: a visor-wearing cat reads your list and comments on your taste (generous scorer? contrarian? 40 gaps on your shelf?).
 
 No login and no API token. It reads public AniList lists, and your shelf and wishlist are saved in PostgreSQL under an anonymous profile tied to your browser.
@@ -18,6 +18,8 @@ docker compose up --build
 Open http://localhost:3000, then enter an AniList username or press **Try demo** to load a sample profile with a partly filled shelf.
 
 This starts PostgreSQL 18 (data in the `pgdata` volume) and the app. The schema is created on first start. To change the database password or ports, set `POSTGRES_PASSWORD`, `POSTGRES_PORT` or `APP_PORT` in a `.env` file next to `compose.yaml`.
+
+`GET /api/health` answers `{ "ok": true }` while Postgres is reachable and `503` otherwise; the app container's healthcheck polls it, so `docker compose ps` shows the app as healthy only once it can serve data.
 
 ## Develop
 
@@ -53,7 +55,7 @@ Browser ──Server Actions──▶ Next.js server ──GraphQL──▶ grap
   5. *From your planning list*: vol. 1 of plan-to-read manga.
 
   Hidden items come back automatically when their missing volumes change.
-- **ID card and mascot** (`src/lib/profile.ts`): the role comes from your top genre (Sci-Fi/Mecha → Netrunner, Psychological/Mystery → Fixer, and so on), the level from episodes and chapters, and the cat's lines from a weighted rule set. The picks are seeded by username, so they stay stable between visits.
+- **ID card and mascot** (`src/lib/profile.ts`): the role comes from your top genre (Sci-Fi/Mecha → Netrunner, Psychological/Mystery → Fixer, and so on), the level from episodes and chapters, and the cat's lines from a weighted rule set. The picks are seeded by username, so they stay stable between visits. **Download PNG** fetches `/id-card.png`, which draws the same card as a 1200×630 image on the server with `next/og` (fonts are vendored under `src/app/id-card.png/fonts`).
 
 ## Scripts
 
@@ -65,18 +67,18 @@ Browser ──Server Actions──▶ Next.js server ──GraphQL──▶ grap
 | `npm run lint` | ESLint |
 | `npm run typecheck` | Generates Next route types, then runs `tsc` |
 
-CI runs lint, typecheck, tests (against a Postgres service) and a build on every push and pull request, and checks that the Docker image builds.
+CI runs lint, typecheck, tests (against a Postgres service) and a build on pull requests and on pushes to `main`, and checks that the Docker image builds; a newer push cancels the run still going for the old commit. Dependabot opens weekly PRs for npm (minor and patch bumps grouped into one), GitHub Actions and the Docker base image.
 
 ## Stack
 
 Next.js 16 (App Router, standalone output) · React 19 · TypeScript · Tailwind CSS 4 · PostgreSQL 18 via `pg` · Docker Compose · Vitest.
 
-If you serve it over HTTPS behind a reverse proxy, make sure the proxy sends `X-Forwarded-Proto` so the profile cookie is marked `Secure`.
+If you serve it over HTTPS behind a reverse proxy, make sure the proxy sends `X-Forwarded-Proto` so the profile cookie is marked `Secure`. Every response carries a Content-Security-Policy and the usual hardening headers (`next.config.ts`); if you add another image host, allow it in both `images.remotePatterns` and the CSP `img-src`.
 
 ## Roadmap
 
 - [ ] AniList OAuth to read private lists and write progress back
-- [ ] Export the ID card as a PNG to share
+- [x] Export the ID card as a PNG to share
 - [ ] ISBN barcode scanning to add volumes from your phone camera
 - [ ] Link a profile across devices (currently JSON export/import in Settings)
 - [ ] Release alerts for series on your shelf
