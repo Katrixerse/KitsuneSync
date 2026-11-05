@@ -30,6 +30,9 @@ query Library($userName: String) {
 /** AniList usernames are 2-20 characters of letters, digits, `_` and `-`. */
 export const USERNAME_PATTERN = /^[A-Za-z0-9_-]{2,20}$/;
 
+/** How long to wait for AniList before giving up, so a stalled request doesn't hang the sync. */
+export const ANILIST_TIMEOUT_MS = 15_000;
+
 interface RawDate {
   year: number | null;
   month: number | null;
@@ -91,6 +94,12 @@ export class AniListError extends Error {
     super(message);
     this.name = "AniListError";
   }
+}
+
+/** fetch rejects with a DOMException named TimeoutError (or AbortError on older runtimes) when its signal fires. */
+function isTimeout(err: unknown): boolean {
+  const name = (err as { name?: unknown } | null)?.name;
+  return name === "TimeoutError" || name === "AbortError";
 }
 
 function formatDate(date: RawDate | null): string | null {
@@ -176,12 +185,19 @@ export async function fetchLibrary(userName: string): Promise<Library> {
   if (!USERNAME_PATTERN.test(userName)) {
     throw new AniListError("That doesn't look like an AniList username.", 400);
   }
-  const res = await fetch(ANILIST_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ query: LIBRARY_QUERY, variables: { userName } }),
-    cache: "no-store",
-  });
+  let res: Response;
+  try {
+    res = await fetch(ANILIST_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ query: LIBRARY_QUERY, variables: { userName } }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(ANILIST_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if (!isTimeout(err)) throw err;
+    throw new AniListError("AniList took too long to respond. Try again shortly.", 504);
+  }
   if (res.status === 429) {
     throw new AniListError("AniList is rate limiting us. Try again in a minute.", 429);
   }

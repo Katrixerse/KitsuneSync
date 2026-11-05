@@ -1,4 +1,4 @@
-/** Applies database migrations once per server start, before any request is handled. */
+/** Applies database migrations once per server start, before any request is handled, then starts housekeeping. */
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   // `next build` loads this file too, and the database isn't needed (or reachable) there.
@@ -6,4 +6,8 @@ export async function register() {
 
   const { migrate } = await import("./lib/db/migrate");
   await migrate();
+
+  const { getPool } = await import("./lib/db/pool");
+  const { scheduleCleanup } = await import("./lib/db/cleanup");
+  scheduleCleanup(getPool());
 }

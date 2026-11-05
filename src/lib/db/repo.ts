@@ -110,9 +110,44 @@ export async function deleteSeries(db: Db, profileId: string, mediaId: number) {
   await db.query("DELETE FROM shelf_series WHERE profile_id = $1 AND media_id = $2", [profileId, mediaId]);
 }
 
+/** Series on the shelf, leaving out `except` so an update of an existing series doesn't count as a new one. */
+export async function countSeries(db: Db, profileId: string, except?: number): Promise<number> {
+  const { rows } = await db.query<{ n: number }>(
+    // IS DISTINCT FROM treats a missing `except` (null) as "count everything".
+    "SELECT count(*)::int AS n FROM shelf_series WHERE profile_id = $1 AND media_id IS DISTINCT FROM $2",
+    [profileId, except ?? null],
+  );
+  return rows[0].n;
+}
+
+/** Replaces the whole shelf in two statements: one delete, one insert of every row. */
 export async function replaceShelf(db: Db, profileId: string, shelf: Shelf) {
   await db.query("DELETE FROM shelf_series WHERE profile_id = $1", [profileId]);
-  for (const series of Object.values(shelf)) await upsertSeries(db, profileId, series);
+  const rows = Object.values(shelf).map((s) => ({
+    media_id: s.mediaId,
+    title: s.title,
+    cover: s.cover,
+    color: s.color,
+    site_url: s.siteUrl,
+    total_volumes: s.totalVolumes,
+    owned: s.owned,
+    edition: s.edition,
+    ongoing: s.ongoing,
+    notes: s.notes,
+    added_at: s.addedAt,
+  }));
+  if (!rows.length) return;
+  await db.query(
+    `INSERT INTO shelf_series
+       (profile_id, media_id, title, cover, color, site_url, total_volumes, owned, edition, ongoing, notes, added_at)
+     SELECT $1::uuid, x.media_id, x.title, x.cover, x.color, x.site_url, x.total_volumes, x.owned, x.edition, x.ongoing,
+       x.notes, x.added_at
+     FROM jsonb_to_recordset($2::jsonb) AS x(
+       media_id integer, title text, cover text, color text, site_url text, total_volumes integer, owned integer[],
+       edition text, ongoing boolean, notes text, added_at timestamptz
+     )`,
+    [profileId, JSON.stringify(rows)],
+  );
 }
 
 export async function addManualWish(db: Db, profileId: string, wish: ManualWish) {
@@ -127,6 +162,15 @@ export async function deleteManualWish(db: Db, profileId: string, id: string) {
   await db.query("DELETE FROM wishlist_manual WHERE profile_id = $1 AND id = $2", [profileId, id]);
 }
 
+/** Hand-added wishes, leaving out `except` so re-adding an existing one doesn't count as a new one. */
+export async function countManualWishes(db: Db, profileId: string, except?: string): Promise<number> {
+  const { rows } = await db.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM wishlist_manual WHERE profile_id = $1 AND id IS DISTINCT FROM $2::uuid",
+    [profileId, except ?? null],
+  );
+  return rows[0].n;
+}
+
 export async function dismissKey(db: Db, profileId: string, key: string) {
   await db.query(
     "INSERT INTO wishlist_dismissed (profile_id, key) VALUES ($1, $2) ON CONFLICT DO NOTHING",
@@ -134,13 +178,39 @@ export async function dismissKey(db: Db, profileId: string, key: string) {
   );
 }
 
+/** Hidden wishlist items, leaving out `except` so hiding the same item again doesn't count as a new one. */
+export async function countDismissed(db: Db, profileId: string, except?: string): Promise<number> {
+  const { rows } = await db.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM wishlist_dismissed WHERE profile_id = $1 AND key IS DISTINCT FROM $2",
+    [profileId, except ?? null],
+  );
+  return rows[0].n;
+}
+
 export async function clearDismissed(db: Db, profileId: string) {
   await db.query("DELETE FROM wishlist_dismissed WHERE profile_id = $1", [profileId]);
 }
 
+/** Replaces the wishlist: one delete and one insert per table. */
 export async function replaceWishlist(db: Db, profileId: string, wishlist: WishlistState) {
   await db.query("DELETE FROM wishlist_manual WHERE profile_id = $1", [profileId]);
   await clearDismissed(db, profileId);
-  for (const wish of wishlist.manual) await addManualWish(db, profileId, wish);
-  for (const key of wishlist.dismissed) await dismissKey(db, profileId, key);
+  if (wishlist.manual.length) {
+    const rows = wishlist.manual.map((w) => ({ id: w.id, title: w.title, note: w.note, added_at: w.addedAt }));
+    await db.query(
+      `INSERT INTO wishlist_manual (profile_id, id, title, note, added_at)
+       SELECT $1::uuid, x.id, x.title, x.note, x.added_at
+       FROM jsonb_to_recordset($2::jsonb) AS x(id uuid, title text, note text, added_at timestamptz)
+       ON CONFLICT (profile_id, id) DO NOTHING`,
+      [profileId, JSON.stringify(rows)],
+    );
+  }
+  if (wishlist.dismissed.length) {
+    await db.query(
+      `INSERT INTO wishlist_dismissed (profile_id, key)
+       SELECT $1::uuid, value FROM jsonb_array_elements_text($2::jsonb)
+       ON CONFLICT DO NOTHING`,
+      [profileId, JSON.stringify(wishlist.dismissed)],
+    );
+  }
 }
