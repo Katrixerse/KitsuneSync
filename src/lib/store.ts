@@ -24,12 +24,21 @@ export type { KitsuneState } from "./state";
  * Client-side copy of the profile's data. The root layout loads it from
  * Postgres and seeds this store; after that, actions update it right away and
  * save to the server in the background (Server Actions run one at a time, in
- * order). If a save fails, the store reloads what the server has.
+ * order). If a save fails, the store reloads what the server has, but only
+ * once every pending save has settled, so edits made in the meantime aren't
+ * overwritten. A reload that an edit overtook is discarded and run again.
  */
 
 let state: KitsuneState | null = null;
 let saveError: string | null = null;
 const listeners = new Set<() => void>();
+
+/** Saves still in flight. */
+let pending = 0;
+/** Bumped by every local change; a reload that began before one is stale. */
+let generation = 0;
+let reloadNeeded = false;
+let reloading = false;
 
 const InitialState = createContext<KitsuneState>(EMPTY_STATE);
 
@@ -57,30 +66,61 @@ function subscribe(listener: () => void) {
 
 function setState(update: (prev: KitsuneState) => KitsuneState) {
   state = update(current());
+  generation++;
   emit();
 }
 
 /** Applies a change locally, then saves it. */
 function mutate(update: (prev: KitsuneState) => KitsuneState, save: () => Promise<unknown>) {
   setState(update);
-  save().then(
-    () => {
-      if (saveError) {
-        saveError = null;
+  pending++;
+  save()
+    .then(
+      () => {
+        if (saveError) {
+          saveError = null;
+          emit();
+        }
+      },
+      (err) => {
+        console.error("Save failed", err);
+        saveError = "Couldn't save your last change. Showing what's saved.";
+        reloadNeeded = true;
         emit();
-      }
-    },
-    async (err) => {
-      console.error("Save failed", err);
-      saveError = "Couldn't save your last change. Showing what's saved.";
-      try {
-        state = await loadStateAction();
-      } catch {
-        saveError = "Can't reach the server. Changes aren't being saved.";
-      }
+      },
+    )
+    .finally(() => {
+      pending--;
+      void reload();
+    });
+}
+
+/**
+ * Replaces the local state with the server's after a failed save, once no
+ * save is pending. A change made while the reload is in flight makes its
+ * result stale, so it's dropped and the reload runs again after that save.
+ */
+async function reload() {
+  if (!reloadNeeded || pending > 0 || reloading) return;
+  reloadNeeded = false;
+  reloading = true;
+  const started = generation;
+  try {
+    const saved = await loadStateAction();
+    if (generation === started) {
+      state = saved;
       emit();
-    },
-  );
+    } else {
+      reloadNeeded = true;
+    }
+  } catch {
+    saveError = "Can't reach the server. Changes aren't being saved.";
+    emit();
+  } finally {
+    reloading = false;
+  }
+  // A save that settled during the reload couldn't start one; try again now.
+  void reload();
 }
 
 export function useKitsune(): KitsuneState {
@@ -91,6 +131,11 @@ export function useKitsune(): KitsuneState {
 /** The last save error, cleared by the next successful save. */
 export function useSaveError(): string | null {
   return useSyncExternalStore(subscribe, () => saveError, () => null);
+}
+
+/** What the hooks would return right now. For tests; components use the hooks. */
+export function readStore(): { state: KitsuneState; saveError: string | null } {
+  return { state: current(), saveError };
 }
 
 /* ---------- actions ---------- */
