@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { demoLibrary, demoShelf } from "../demo";
+import type { ReleaseAlert } from "../releases";
 import { seriesFromEntry } from "../shelf";
 import { EMPTY_STATE } from "../state";
 import { migrate } from "./migrate";
@@ -21,22 +22,35 @@ describe.skipIf(!process.env.DATABASE_URL)("repo (Postgres)", () => {
     await getPool().end();
   });
 
+  function alert(mediaId: number, volumes: number[], releasedAt: string): ReleaseAlert {
+    return { mediaId, title: `Series ${mediaId}`, cover: null, color: null, volumes, releasedAt };
+  }
+
   it("round-trips a full state", async () => {
     const library = demoLibrary();
+    // Includes a known count (Berserk) and an unknown one (Chainsaw Man).
     const shelf = demoShelf(library);
     const wishlist = {
       manual: [{ id: randomUUID(), title: "Artbook", note: "signed", addedAt: "2026-01-01T00:00:00.000Z" }],
       dismissed: ["gap:1:2"],
     };
+    const releases = [
+      alert(950_001, [43], "2026-06-02T00:00:00.000Z"),
+      { ...alert(950_003, [11, 12], "2026-06-01T00:00:00.000Z"), cover: "https://s4.anilist.co/file/x.jpg", color: "#5d6770" },
+      alert(950_007, [19], "2026-06-01T00:00:00.000Z"),
+    ];
 
     await withTransaction(async (db) => {
       await repo.touchProfile(db, profileId);
       await repo.saveLibrary(db, profileId, library);
       await repo.replaceShelf(db, profileId, shelf);
       await repo.replaceWishlist(db, profileId, wishlist);
+      // Stored in a different order than they are read back: newest first, then by media id.
+      await repo.replaceReleases(db, profileId, [releases[2], releases[0], releases[1]]);
     });
 
-    expect(await repo.loadState(getPool(), profileId)).toEqual({ ...EMPTY_STATE, library, shelf, wishlist });
+    expect(await repo.loadState(getPool(), profileId)).toEqual({ ...EMPTY_STATE, library, shelf, wishlist, releases });
+    expect(Object.values(shelf).map((s) => s.releasedVolumes)).toEqual(expect.arrayContaining([42, null]));
   });
 
   it("applies single-item changes", async () => {
@@ -56,12 +70,56 @@ describe.skipIf(!process.env.DATABASE_URL)("repo (Postgres)", () => {
     expect((await repo.loadState(db, profileId)).shelf[first.mediaId]).toBeUndefined();
   });
 
+  describe("release alerts", () => {
+    it("drops one alert when dismissed, and a series' alert with the series", async () => {
+      const db = getPool();
+      const [a, b] = demoLibrary().manga.map((e) => seriesFromEntry(e));
+      await repo.replaceShelf(db, profileId, { [a.mediaId]: a, [b.mediaId]: b });
+      await repo.replaceReleases(db, profileId, [alert(a.mediaId, [7], "2026-06-01T00:00:00.000Z"), alert(b.mediaId, [44], "2026-06-01T00:00:00.000Z")]);
+
+      await repo.dismissRelease(db, profileId, a.mediaId);
+      expect((await repo.loadState(db, profileId)).releases).toEqual([alert(b.mediaId, [44], "2026-06-01T00:00:00.000Z")]);
+      // Dismissing again, or an alert that never existed, is fine.
+      await repo.dismissRelease(db, profileId, a.mediaId);
+      await repo.dismissRelease(db, profileId, -42);
+
+      await repo.deleteSeries(db, profileId, b.mediaId);
+      const after = await repo.loadState(db, profileId);
+      expect(after.shelf[b.mediaId]).toBeUndefined();
+      expect(after.releases).toEqual([]);
+      expect(after.shelf[a.mediaId]).toEqual(a);
+    });
+
+    it("replaces the alerts in one batch", async () => {
+      const db = getPool();
+      const alerts = [alert(3, [1], "2026-06-03T00:00:00.000Z"), alert(1, [2, 3], "2026-06-02T00:00:00.000Z"), alert(2, [9], "2026-06-01T00:00:00.000Z")];
+      await repo.replaceReleases(db, profileId, alerts);
+      expect((await repo.loadState(db, profileId)).releases).toEqual(alerts);
+
+      await repo.replaceReleases(db, profileId, [{ ...alerts[1], volumes: [2, 3, 4] }]);
+      expect((await repo.loadState(db, profileId)).releases).toEqual([{ ...alerts[1], volumes: [2, 3, 4] }]);
+
+      await repo.replaceReleases(db, profileId, []);
+      expect((await repo.loadState(db, profileId)).releases).toEqual([]);
+    });
+
+    it("go with their profile", async () => {
+      const db = getPool();
+      const other = randomUUID();
+      await repo.touchProfile(db, other);
+      await repo.replaceReleases(db, other, [alert(1, [2], "2026-06-01T00:00:00.000Z")]);
+      expect((await repo.loadState(db, other)).releases).toHaveLength(1);
+      await repo.deleteProfile(db, other);
+      expect((await repo.loadState(db, other)).releases).toEqual([]);
+    });
+  });
+
   it("replaces the shelf in one batch, dropping series not in the new set", async () => {
     const db = getPool();
     const library = demoLibrary();
     const [a, b, c] = library.manga.map((e) => seriesFromEntry(e, new Date("2026-02-03T04:05:06.000Z")));
     const added = { ...a, owned: [1, 2, 3, 7], notes: "signed", edition: "deluxe" as const, cover: null };
-    const other = { ...b, addedAt: "2025-12-31T23:59:59.000Z", totalVolumes: 12, ongoing: true };
+    const other = { ...b, addedAt: "2025-12-31T23:59:59.000Z", totalVolumes: 12, releasedVolumes: 11, ongoing: true };
 
     await repo.replaceShelf(db, profileId, { [added.mediaId]: added, [other.mediaId]: other, [c.mediaId]: c });
     const first = await repo.loadState(db, profileId);

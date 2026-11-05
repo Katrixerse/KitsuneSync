@@ -4,6 +4,7 @@ A Next.js dashboard that syncs your [AniList](https://anilist.co) anime and mang
 
 - **Physical manga shelf**: track which volumes you actually own, volume by volume, with gaps highlighted and editions (standard, omnibus, deluxe, box set) logged.
 - **Auto-filling wishlist**: missing volumes, newly released volumes, highly rated manga you don't own yet, and your plan-to-read list, queued up automatically.
+- **Release alerts**: when a sync finds that AniList lists more volumes for a series on your shelf than it did last time, the dashboard says which ones are out.
 - **Cyberpunk ID card**: your stats as a Night City ID with a role, a level, genre "implants" and a scannable-looking barcode, downloadable as a PNG.
 - **Cat mascot**: a visor-wearing cat reads your list and comments on your taste (generous scorer? contrarian? 40 gaps on your shelf?).
 
@@ -36,16 +37,17 @@ npm run dev
 Browser ──Server Actions──▶ Next.js server ──GraphQL──▶ graphql.anilist.co
    ▲  (optimistic store)          │
    │                              ▼
-   └──── layout render ◀──── PostgreSQL  profiles · libraries · shelf_series
+   └──── layout render ◀──── PostgreSQL  profiles · libraries · shelf_series · release_alerts
                                           wishlist_manual · wishlist_dismissed · link_codes
    lib/shelf.ts     volume ownership, gaps, ranges ("1–3, 5")
    lib/wishlist.ts  builds the wishlist from shelf + manga list
+   lib/releases.ts  spots volumes AniList added since the last sync
    lib/profile.ts   stats, role, level, cat commentary
 ```
 
 - **Sync**: `syncLibraryAction` in `src/app/actions.ts` calls `src/lib/anilist/client.ts`, which sends one GraphQL request that fetches both `MediaListCollection`s, then flattens them (skipping custom-list duplicates) into a small `Library` shape. Unknown users, private lists, rate limits and a stalled AniList (15 s timeout) come back as readable errors. The library is stored as one `jsonb` row per profile. Responses are cached per username for a minute (`src/lib/sync-cache.ts`) and a profile, or the client IP before a profile exists, may sync 10 times a minute (`src/lib/rate-limit.ts`); both limits live in the server process, which suits the single-container deploy.
 - **Profiles**: there are no accounts. The first save creates a profile with a random id and stores it in an httpOnly cookie (`src/lib/session.ts`). To open the same profile on a phone or another browser, Settings → Link another device shows a one-time code (8 letters and digits, `src/lib/link-code.ts`) that is valid for 10 minutes; entering it in Settings on the other device points that browser's cookie at the profile. Redeeming is limited to 10 attempts a minute per profile or IP. Settings → Export/Import still moves a shelf as a JSON file.
-- **Storage**: the root layout loads the profile from Postgres and seeds `src/lib/store.ts`, a small external store read through `useSyncExternalStore`, so pages render with your data straight away. Edits update the store immediately and are saved through Server Actions, which validate every input (`src/lib/validate.ts`): covers and links must point at AniList, colours must be hex, and a profile holds at most 2000 series, 500 hand-added wishes and 5000 hidden wishlist items. Imports and syncs write the shelf and wishlist in one batched statement per table. If a save fails, the store reloads what the server has and the nav shows an error. Re-syncing refreshes titles, covers and totals on the shelf without touching owned volumes.
+- **Storage**: the root layout loads the profile from Postgres and seeds `src/lib/store.ts`, a small external store read through `useSyncExternalStore`, so pages render with your data straight away. Edits update the store immediately and are saved through Server Actions, which validate every input (`src/lib/validate.ts`): covers and links must point at AniList, colours must be hex, and a profile holds at most 2000 series, 500 hand-added wishes and 5000 hidden wishlist items. Imports and syncs write the shelf and wishlist in one batched statement per table. If a save fails, the store reloads what the server has and the nav shows an error. Re-syncing refreshes titles and covers on the shelf without touching owned volumes. Each series remembers AniList's volume count from the last sync (`releasedVolumes`): a total that still matches it follows AniList's count, while a total you typed yourself is kept. When the count has grown, the dashboard shows a **New releases** alert naming the volumes (`src/lib/releases.ts`); it stays until you dismiss it or take the series off the shelf, and later syncs add to it rather than replacing it. Series saved before this existed get their count on the next sync, without an alert.
 - **Schema**: migrations live in `src/lib/db/migrate.ts` and run on server start from `src/instrumentation.ts`, guarded by an advisory lock. The same startup hook runs a cleanup (`src/lib/db/cleanup.ts`), repeated daily, that deletes profiles untouched for 400 days (the cookie's lifetime), empty profiles older than a day and expired link codes.
 - **Wishlist rules** (`src/lib/wishlist.ts`), highest priority first:
   1. *Fill the gaps*: volumes missing below the highest volume you own.
@@ -81,7 +83,7 @@ If you serve it over HTTPS behind a reverse proxy, make sure the proxy sends `X-
 - [x] Export the ID card as a PNG to share
 - [ ] ISBN barcode scanning to add volumes from your phone camera
 - [x] Link a profile across devices with a one-time code from Settings
-- [ ] Release alerts for series on your shelf
+- [x] Release alerts for series on your shelf
 
 ## Credits
 

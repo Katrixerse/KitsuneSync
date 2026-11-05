@@ -68,6 +68,29 @@ export const MIGRATIONS: { id: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    id: 3,
+    name: "release_alerts",
+    sql: `
+      -- AniList's volume count at the last sync, null for rows from before this migration and for
+      -- hand-added series: the base for "new release" alerts, and the sign that the total was
+      -- filled by AniList rather than typed (see lib/releases.ts).
+      ALTER TABLE shelf_series ADD COLUMN released_volumes integer CHECK (released_volumes BETWEEN 1 AND 200);
+
+      -- One open alert per shelved series: the volumes AniList added since an earlier sync.
+      -- Updated by later syncs; deleted when dismissed or when the series leaves the shelf.
+      CREATE TABLE release_alerts (
+        profile_id uuid NOT NULL REFERENCES profiles (id) ON DELETE CASCADE,
+        media_id integer NOT NULL,
+        title text NOT NULL,
+        cover text,
+        color text,
+        volumes integer[] NOT NULL,
+        released_at timestamptz NOT NULL,
+        PRIMARY KEY (profile_id, media_id)
+      );
+    `,
+  },
 ];
 
 // Arbitrary constant so concurrent server starts don't race each other.

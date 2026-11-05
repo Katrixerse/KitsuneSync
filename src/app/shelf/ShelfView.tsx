@@ -119,6 +119,7 @@ function AddSeries({ library, shelf }: { library: Library; shelf: Shelf }) {
       color: null,
       siteUrl: null,
       totalVolumes: Number.isFinite(n) && n > 0 ? Math.floor(n) : null,
+      releasedVolumes: null,
       owned: [],
       edition: "standard",
       ongoing: false,

@@ -3,17 +3,22 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { migrate } from "@/lib/db/migrate";
 import { getPool } from "@/lib/db/pool";
 import * as repo from "@/lib/db/repo";
-import { demoLibrary } from "@/lib/demo";
+import { demoLibrary, demoShelf } from "@/lib/demo";
 import { generateLinkCode, LINK_CODE_TTL_MS } from "@/lib/link-code";
 import { LINK_ATTEMPT_LIMIT, SYNC_LIMIT } from "@/lib/rate-limit";
 import type { ShelfSeries } from "@/lib/shelf";
+import { applySync, EMPTY_STATE } from "@/lib/state";
 import { libraryCache } from "@/lib/sync-cache";
 import { MAX_DISMISSED_KEYS, MAX_MANUAL_WISHES, MAX_SHELF_SERIES, ValidationError } from "@/lib/validate";
 import {
   addManualWishAction,
   createLinkCodeAction,
+  dismissReleaseAction,
   dismissWishAction,
+  importBackupAction,
+  loadDemoAction,
   redeemLinkCodeAction,
+  removeSeriesAction,
   syncLibraryAction,
   upsertSeriesAction,
 } from "./actions";
@@ -47,6 +52,7 @@ function series(mediaId: number, patch: Partial<ShelfSeries> = {}): ShelfSeries 
     color: null,
     siteUrl: null,
     totalVolumes: null,
+    releasedVolumes: null,
     owned: [],
     edition: "standard",
     ongoing: false,
@@ -186,6 +192,63 @@ describe.skipIf(!process.env.DATABASE_URL)("actions (Postgres)", () => {
     libraryCache.clear();
     await syncLibraryAction("Tester");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  describe("release alerts", () => {
+    const berserk = demoLibrary().manga.find((e) => e.media.title === "Berserk")!;
+
+    it("saves the alerts a sync finds, keeps them over later syncs and drops one on dismiss", async () => {
+      const profileId = await freshProfile();
+      const demo = demoLibrary();
+      const shelf = demoShelf(demo); // Berserk is one volume behind AniList
+      await repo.replaceShelf(getPool(), profileId, shelf);
+
+      const synced = await syncLibraryAction("demo");
+      expect(synced).toMatchObject({ ok: true });
+      if (!synced.ok) throw new Error("unreachable");
+      const state = await repo.loadState(getPool(), profileId);
+      expect(state.releases).toEqual([
+        { mediaId: berserk.media.id, title: "Berserk", cover: null, color: "#861c1c", volumes: [43], releasedAt: synced.library.syncedAt },
+      ]);
+      expect(state.shelf[berserk.media.id]).toMatchObject({ owned: shelf[berserk.media.id].owned, totalVolumes: 43, releasedVolumes: 43 });
+      // What the server saved is what the client computes from the same result.
+      expect(state).toEqual(applySync({ ...EMPTY_STATE, shelf }, synced.library));
+
+      // Nothing new on the next sync: the alert stays, with its original date.
+      const again = await syncLibraryAction("demo");
+      if (!again.ok) throw new Error(again.error);
+      expect(again.library.syncedAt).not.toBe(synced.library.syncedAt);
+      expect((await repo.loadState(getPool(), profileId)).releases).toEqual(state.releases);
+
+      await expect(dismissReleaseAction(berserk.media.id)).resolves.toBeUndefined();
+      expect((await repo.loadState(getPool(), profileId)).releases).toEqual([]);
+      // Dismissed stays dismissed: the count moved on with the sync.
+      expect(await syncLibraryAction("demo")).toMatchObject({ ok: true });
+      expect((await repo.loadState(getPool(), profileId)).releases).toEqual([]);
+    });
+
+    it("refuses ids that aren't ids", async () => {
+      await freshProfile();
+      for (const input of ["1", 1.5, null, undefined, {}]) {
+        await expect(dismissReleaseAction(input)).rejects.toThrow("Invalid media id.");
+      }
+    });
+
+    it("seeds the demo with one alert, which goes with its series but survives an import", async () => {
+      const profileId = await freshProfile();
+      const state = await loadDemoAction();
+      expect(state.releases).toEqual([expect.objectContaining({ title: "Berserk", volumes: [43] })]);
+      expect(await repo.loadState(getPool(), profileId)).toEqual(state);
+
+      // Importing a backup replaces the shelf and wishlist, not the alerts.
+      await importBackupAction({ shelf: state.shelf, wishlist: undefined });
+      expect((await repo.loadState(getPool(), profileId)).releases).toEqual(state.releases);
+
+      await removeSeriesAction(berserk.media.id);
+      const after = await repo.loadState(getPool(), profileId);
+      expect(after.shelf[berserk.media.id]).toBeUndefined();
+      expect(after.releases).toEqual([]);
+    });
   });
 
   describe("link codes", () => {

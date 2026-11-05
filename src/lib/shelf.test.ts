@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { demoLibrary } from "./demo";
 import {
   displayedVolumeCount,
   formatRanges,
   gapVolumes,
   isComplete,
+  knownVolumes,
   nextVolumes,
   ownFirst,
   parseRanges,
+  seriesFromEntry,
   setTotalVolumes,
   shelfStats,
   toggleVolume,
@@ -21,6 +24,7 @@ function series(overrides: Partial<ShelfSeries> = {}): ShelfSeries {
     color: null,
     siteUrl: null,
     totalVolumes: 10,
+    releasedVolumes: null,
     owned: [],
     edition: "standard",
     ongoing: false,
@@ -90,5 +94,21 @@ describe("volumes", () => {
       2: series({ mediaId: 2, owned: [1, 4] }),
     });
     expect(stats).toEqual({ series: 2, volumes: 4, complete: 1, gaps: 2 });
+  });
+});
+
+describe("seriesFromEntry", () => {
+  const entry = demoLibrary().manga[0]; // Akira, 6 volumes
+  const withVolumes = (volumes: number | null) => ({ ...entry, media: { ...entry.media, volumes } });
+
+  it("starts an empty series with AniList's count as both the total and the last known count", () => {
+    expect(seriesFromEntry(entry)).toMatchObject({ mediaId: entry.media.id, owned: [], totalVolumes: 6, releasedVolumes: 6 });
+    expect(seriesFromEntry(withVolumes(null))).toMatchObject({ totalVolumes: null, releasedVolumes: null });
+  });
+
+  it("clamps counts a shelf can't hold", () => {
+    expect(knownVolumes(withVolumes(250).media)).toBe(200);
+    expect(knownVolumes(withVolumes(0).media)).toBeNull();
+    expect(seriesFromEntry(withVolumes(250))).toMatchObject({ totalVolumes: 200, releasedVolumes: 200 });
   });
 });

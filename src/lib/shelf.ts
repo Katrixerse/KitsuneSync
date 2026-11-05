@@ -1,4 +1,4 @@
-import type { ListEntry } from "./anilist/types";
+import type { ListEntry, Media } from "./anilist/types";
 
 export type Edition = "standard" | "omnibus" | "deluxe" | "box-set";
 
@@ -18,6 +18,12 @@ export interface ShelfSeries {
   siteUrl: string | null;
   /** Total volumes if known. Filled from AniList, can be overridden by hand. */
   totalVolumes: number | null;
+  /**
+   * AniList's volume count at the last sync, null when unknown or for hand-added
+   * series; used to detect new releases and to tell an AniList-filled total from
+   * a hand-set one (see lib/releases.ts).
+   */
+  releasedVolumes: number | null;
   /** Owned volume numbers, sorted ascending, no duplicates. */
   owned: number[];
   edition: Edition;
@@ -31,15 +37,22 @@ export type Shelf = Record<number, ShelfSeries>;
 
 export const MAX_VOLUMES = 200;
 
+/** AniList's volume count for a series, clamped to what a shelf can hold, or null when it has none. */
+export function knownVolumes(media: Media): number | null {
+  return media.volumes !== null && media.volumes >= 1 ? Math.min(media.volumes, MAX_VOLUMES) : null;
+}
+
 export function seriesFromEntry(entry: ListEntry, now = new Date()): ShelfSeries {
   const { media } = entry;
+  const volumes = knownVolumes(media);
   return {
     mediaId: media.id,
     title: media.title,
     cover: media.cover,
     color: media.color,
     siteUrl: media.siteUrl,
-    totalVolumes: media.volumes,
+    totalVolumes: volumes,
+    releasedVolumes: volumes,
     owned: [],
     edition: "standard",
     ongoing: media.status === "RELEASING" || media.status === "HIATUS",

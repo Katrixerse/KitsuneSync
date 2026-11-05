@@ -77,10 +77,13 @@ function volume(value: unknown): value is number {
 
 export function parseShelfSeries(input: unknown): ShelfSeries {
   if (!isRecord(input)) throw new ValidationError("Series must be an object.");
-  const { mediaId, totalVolumes, owned = [], edition = "standard", ongoing = false } = input;
+  const { mediaId, totalVolumes, releasedVolumes, owned = [], edition = "standard", ongoing = false } = input;
   if (!Number.isSafeInteger(mediaId) || mediaId === 0) throw new ValidationError("Series needs a media id.");
   if (totalVolumes !== undefined && totalVolumes !== null && !volume(totalVolumes)) {
     throw new ValidationError("Total volumes is out of range.");
+  }
+  if (releasedVolumes !== undefined && releasedVolumes !== null && !volume(releasedVolumes)) {
+    throw new ValidationError("Released volumes is out of range.");
   }
   if (!Array.isArray(owned) || !owned.every(volume)) throw new ValidationError("Owned volumes are out of range.");
   if (typeof edition !== "string" || !(edition in EDITION_LABELS)) throw new ValidationError("Unknown edition.");
@@ -95,6 +98,8 @@ export function parseShelfSeries(input: unknown): ShelfSeries {
     color,
     siteUrl: optionalUrl(input.siteUrl, "Site URL", SITE_PREFIX, "Site URL must be an AniList link."),
     totalVolumes: (totalVolumes as number | null | undefined) ?? null,
+    // Backups from before release alerts have no count: the next sync records one.
+    releasedVolumes: (releasedVolumes as number | null | undefined) ?? null,
     owned: [...new Set(owned as number[])].sort((a, b) => a - b),
     edition: edition as Edition,
     ongoing,

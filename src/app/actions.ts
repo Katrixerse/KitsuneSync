@@ -76,17 +76,20 @@ export async function syncLibraryAction(userName: unknown): Promise<SyncResult> 
     await repo.saveLibrary(db, profileId, next.library);
     await repo.replaceShelf(db, profileId, next.shelf);
     if (next.wishlist !== prev.wishlist) await repo.replaceWishlist(db, profileId, next.wishlist);
+    if (next.releases !== prev.releases) await repo.replaceReleases(db, profileId, next.releases);
   });
   return { ok: true, library };
 }
 
 export async function loadDemoAction(): Promise<KitsuneState> {
   const library = demoLibrary();
-  const state: KitsuneState = { ...EMPTY_STATE, library, shelf: demoShelf(library) };
+  // Applied like a sync, so the volume the demo shelf is "behind" on shows up as a release alert.
+  const state = applySync({ ...EMPTY_STATE, shelf: demoShelf(library) }, library);
   await withProfile(async (db, profileId) => {
     await repo.saveLibrary(db, profileId, state.library);
     await repo.replaceShelf(db, profileId, state.shelf);
     await repo.replaceWishlist(db, profileId, state.wishlist);
+    await repo.replaceReleases(db, profileId, state.releases);
   });
   return state;
 }
@@ -107,9 +110,15 @@ export async function upsertSeriesAction(series: unknown) {
   });
 }
 
+/** Takes a series off the shelf, along with its release alert. */
 export async function removeSeriesAction(mediaId: unknown) {
   if (!Number.isSafeInteger(mediaId)) throw new Error("Invalid media id.");
   await withProfile((db, profileId) => repo.deleteSeries(db, profileId, mediaId as number));
+}
+
+export async function dismissReleaseAction(mediaId: unknown) {
+  if (!Number.isSafeInteger(mediaId)) throw new Error("Invalid media id.");
+  await withProfile((db, profileId) => repo.dismissRelease(db, profileId, mediaId as number));
 }
 
 export async function addManualWishAction(wish: unknown) {

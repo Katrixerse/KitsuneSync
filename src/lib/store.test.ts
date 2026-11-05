@@ -7,6 +7,7 @@ import { EMPTY_STATE, type KitsuneState } from "./state";
 const actions = vi.hoisted(() => ({
   addManualWishAction: vi.fn(),
   createLinkCodeAction: vi.fn(),
+  dismissReleaseAction: vi.fn(),
   dismissWishAction: vi.fn(),
   importBackupAction: vi.fn(),
   loadDemoAction: vi.fn(),
@@ -42,6 +43,7 @@ function series(mediaId: number): ShelfSeries {
     color: null,
     siteUrl: null,
     totalVolumes: null,
+    releasedVolumes: null,
     owned: [],
     edition: "standard",
     ongoing: false,
@@ -196,6 +198,44 @@ describe("store", () => {
     expect(store.readStore()).toEqual({
       state: stateWith(a),
       saveError: "Can't reach the server. Changes aren't being saved.",
+    });
+  });
+
+  describe("release alerts", () => {
+    const alert = { mediaId: 1, title: "Series 1", cover: null, color: null, volumes: [3], releasedAt: "2026-01-02T00:00:00.000Z" };
+    const other = { ...alert, mediaId: 2, title: "Series 2" };
+    const seeded = { ...stateWith(a, b), releases: [alert, other] };
+
+    it("drops an alert right away and tells the server", async () => {
+      actions.loadDemoAction.mockResolvedValueOnce(seeded);
+      actions.dismissReleaseAction.mockResolvedValueOnce(undefined);
+      await store.loadDemo();
+      expect(store.readStore().state).toEqual(seeded);
+
+      store.dismissRelease(1);
+      expect(store.readStore().state.releases).toEqual([other]);
+      expect(actions.dismissReleaseAction).toHaveBeenCalledWith(1);
+      await flush();
+      expect(store.readStore()).toEqual({ state: { ...seeded, releases: [other] }, saveError: null });
+    });
+
+    it("takes a series' alert off the dashboard with the series", async () => {
+      actions.loadDemoAction.mockResolvedValueOnce(seeded);
+      actions.removeSeriesAction.mockResolvedValueOnce(undefined);
+      await store.loadDemo();
+
+      store.removeSeries(2);
+      expect(store.readStore().state).toEqual({ ...stateWith(a), releases: [alert] });
+      expect(actions.removeSeriesAction).toHaveBeenCalledWith(2);
+      expect(actions.dismissReleaseAction).not.toHaveBeenCalled();
+    });
+
+    it("keeps alerts through a backup import", async () => {
+      actions.loadDemoAction.mockResolvedValueOnce(seeded);
+      actions.importBackupAction.mockResolvedValueOnce(undefined);
+      await store.loadDemo();
+      store.importBackup(JSON.stringify({ app: "kitsunesync", version: 1, shelf: {} }));
+      expect(store.readStore().state).toEqual({ ...EMPTY_STATE, releases: [alert, other] });
     });
   });
 

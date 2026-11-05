@@ -4,6 +4,7 @@ import { createContext, createElement, use, useLayoutEffect, useSyncExternalStor
 import {
   addManualWishAction,
   createLinkCodeAction,
+  dismissReleaseAction,
   dismissWishAction,
   importBackupAction,
   loadDemoAction,
@@ -161,14 +162,22 @@ export function upsertSeries(series: ShelfSeries) {
   );
 }
 
+/** Takes a series off the shelf; its release alert goes with it, here and on the server. */
 export function removeSeries(mediaId: number) {
   mutate(
     (prev) => {
       const shelf = { ...prev.shelf };
       delete shelf[mediaId];
-      return { ...prev, shelf };
+      return { ...prev, shelf, releases: prev.releases.filter((r) => r.mediaId !== mediaId) };
     },
     () => removeSeriesAction(mediaId),
+  );
+}
+
+export function dismissRelease(mediaId: number) {
+  mutate(
+    (prev) => ({ ...prev, releases: prev.releases.filter((r) => r.mediaId !== mediaId) }),
+    () => dismissReleaseAction(mediaId),
   );
 }
 

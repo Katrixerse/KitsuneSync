@@ -22,6 +22,7 @@ const series = {
   color: "#e4a15d",
   siteUrl: "https://anilist.co/manga/30002",
   totalVolumes: 42,
+  releasedVolumes: 42,
   owned: [3, 1, 2, 2],
   edition: "deluxe",
   ongoing: true,
@@ -38,8 +39,32 @@ describe("parseShelfSeries", () => {
 
   it("fills defaults for fields older backups may lack", () => {
     const parsed = parseShelfSeries({ mediaId: -1, title: "Art book" });
-    expect(parsed).toMatchObject({ owned: [], edition: "standard", ongoing: false, notes: "", totalVolumes: null });
+    expect(parsed).toMatchObject({
+      owned: [],
+      edition: "standard",
+      ongoing: false,
+      notes: "",
+      totalVolumes: null,
+      releasedVolumes: null,
+    });
     expect(isNaN(Date.parse(parsed.addedAt))).toBe(false);
+  });
+
+  it("takes AniList's last volume count, or none for hand-added series and older backups", () => {
+    expect(parseShelfSeries({ ...series, releasedVolumes: 1 }).releasedVolumes).toBe(1);
+    expect(parseShelfSeries({ ...series, releasedVolumes: 200 }).releasedVolumes).toBe(200);
+    expect(parseShelfSeries({ ...series, releasedVolumes: null }).releasedVolumes).toBeNull();
+    expect(parseShelfSeries({ ...series, releasedVolumes: undefined }).releasedVolumes).toBeNull();
+  });
+
+  it.each([
+    ["zero", 0],
+    ["over the cap", 201],
+    ["a fraction", 1.5],
+    ["text", "12"],
+    ["a negative count", -1],
+  ])("rejects a released volume count of %s", (_, releasedVolumes) => {
+    expect(() => parseShelfSeries({ ...series, releasedVolumes })).toThrow("Released volumes is out of range.");
   });
 
   it.each([
