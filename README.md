@@ -66,14 +66,15 @@ Browser ──Server Actions──▶ Next.js server ──GraphQL──▶ grap
 | `npm run dev` | Dev server |
 | `npm run build` / `npm start` | Production build / serve |
 | `npm test` | Unit tests (Vitest) for sync normalization, validation, shelf, wishlist and profile logic. Database tests run too when `DATABASE_URL` is set |
+| `npm run test:e2e` | Playwright smoke tests (`e2e/`) of the demo flow, shelf and wishlist saves, backup export and reset, against a production build on port 3200. Run locally it builds first, needs `DATABASE_URL` and the Chromium from `npx playwright install chromium`; in CI it reuses the build from the step before |
 | `npm run lint` | ESLint |
 | `npm run typecheck` | Generates Next route types, then runs `tsc` |
 
-CI runs lint, typecheck, tests (against a Postgres service) and a build on pull requests and on pushes to `main`, and checks that the Docker image builds; a newer push cancels the run still going for the old commit. Dependabot opens weekly PRs for npm (minor and patch bumps grouped into one), GitHub Actions and the Docker base image.
+CI runs lint, typecheck, tests (against a Postgres service), a build and the Playwright smoke tests against that build on pull requests and on pushes to `main`, and checks that the Docker image builds; a newer push cancels the run still going for the old commit, and a failed run keeps the Playwright report (with traces) as an artifact. Dependabot opens weekly PRs for npm (minor and patch bumps grouped into one), GitHub Actions and the Docker base image.
 
 ## Stack
 
-Next.js 16 (App Router, standalone output) · React 19 · TypeScript · Tailwind CSS 4 · PostgreSQL 18 via `pg` · Docker Compose · Vitest.
+Next.js 16 (App Router, standalone output) · React 19 · TypeScript · Tailwind CSS 4 · PostgreSQL 18 via `pg` · Docker Compose · Vitest · Playwright.
 
 If you serve it over HTTPS behind a reverse proxy, make sure the proxy sends `X-Forwarded-Proto` so the profile cookie is marked `Secure`. Every response carries a Content-Security-Policy and the usual hardening headers (`next.config.ts`); if you add another image host, allow it in both `images.remotePatterns` and the CSP `img-src`.
 
