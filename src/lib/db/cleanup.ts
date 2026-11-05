@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { deleteExpiredLinkCodes } from "./repo";
 
 /**
  * Housekeeping for data nobody can reach any more. Runs at server start and
@@ -31,8 +32,11 @@ export async function cleanupProfiles(db: Db): Promise<number> {
   return rowCount ?? 0;
 }
 
-/** Cleanup steps in run order. Add new ones here (e.g. expired link codes); each returns the rows it removed. */
-const STEPS: { name: string; run: (db: Db) => Promise<number> }[] = [{ name: "profiles", run: cleanupProfiles }];
+/** Cleanup steps in run order. Add new ones here; each returns the rows it removed. */
+const STEPS: { name: string; run: (db: Db) => Promise<number> }[] = [
+  { name: "profiles", run: cleanupProfiles },
+  { name: "link codes", run: deleteExpiredLinkCodes },
+];
 
 /** Runs every step. Failures are logged and never thrown, so housekeeping can't take the server down. */
 export async function runCleanup(db: Db): Promise<void> {

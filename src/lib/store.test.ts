@@ -6,10 +6,12 @@ import { EMPTY_STATE, type KitsuneState } from "./state";
 // test settles by hand, to control the order in which saves finish.
 const actions = vi.hoisted(() => ({
   addManualWishAction: vi.fn(),
+  createLinkCodeAction: vi.fn(),
   dismissWishAction: vi.fn(),
   importBackupAction: vi.fn(),
   loadDemoAction: vi.fn(),
   loadStateAction: vi.fn(),
+  redeemLinkCodeAction: vi.fn(),
   removeSeriesAction: vi.fn(),
   resetAllAction: vi.fn(),
   restoreDismissedAction: vi.fn(),
@@ -195,5 +197,36 @@ describe("store", () => {
       state: stateWith(a),
       saveError: "Can't reach the server. Changes aren't being saved.",
     });
+  });
+
+  it("hands out a link code without touching the state", async () => {
+    const made = { ok: true, code: "ABCD-EFGH", expiresAt: "2026-01-01T00:10:00.000Z" };
+    actions.createLinkCodeAction.mockResolvedValueOnce(made);
+    expect(await store.createLinkCode()).toEqual(made);
+    expect(store.readStore()).toEqual({ state: EMPTY_STATE, saveError: null });
+  });
+
+  it("shows the linked profile once a code is redeemed", async () => {
+    actions.upsertSeriesAction.mockResolvedValueOnce(undefined);
+    actions.redeemLinkCodeAction.mockResolvedValueOnce({ ok: true, state: stateWith(b) });
+
+    store.upsertSeries(a);
+    await flush();
+    const result = await store.linkProfile("abcd-efgh");
+    expect(actions.redeemLinkCodeAction).toHaveBeenCalledWith("abcd-efgh");
+    expect(result).toEqual({ ok: true, state: stateWith(b) });
+    // The whole state is replaced: what this browser had is no longer shown.
+    expect(store.readStore()).toEqual({ state: stateWith(b), saveError: null });
+  });
+
+  it("keeps the state when a code is refused", async () => {
+    actions.upsertSeriesAction.mockResolvedValueOnce(undefined);
+    const refused = { ok: false, error: "That code is invalid or has expired." };
+    actions.redeemLinkCodeAction.mockResolvedValueOnce(refused);
+
+    store.upsertSeries(a);
+    await flush();
+    expect(await store.linkProfile("ZZZZ-ZZZZ")).toEqual(refused);
+    expect(store.readStore()).toEqual({ state: stateWith(a), saveError: null });
   });
 });

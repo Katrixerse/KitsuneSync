@@ -50,6 +50,23 @@ describe.skipIf(!process.env.DATABASE_URL)("cleanupProfiles (Postgres)", () => {
     // Nothing left to do on a second pass.
     expect(await cleanupProfiles(db)).toBe(0);
   });
+
+  it("drops expired link codes as a step of the full run", async () => {
+    const db = getPool();
+    await repo.deleteExpiredLinkCodes(db); // whatever earlier runs left behind
+    const live = randomUUID();
+    ids.push(live);
+    await repo.touchProfile(db, live);
+    await repo.createLinkCode(db, activeOld, "CLEANUP1", new Date(Date.now() - 1000));
+    await repo.createLinkCode(db, live, "CLEANUP2", new Date(Date.now() + 60_000));
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await runCleanup(db);
+    expect(log).toHaveBeenCalledWith("[db] cleanup removed 1 link codes");
+    log.mockRestore();
+
+    const { rows } = await db.query<{ code: string }>("SELECT code FROM link_codes WHERE code LIKE 'CLEANUP%'");
+    expect(rows.map((r) => r.code)).toEqual(["CLEANUP2"]);
+  });
 });
 
 function fakeDb(query: ReturnType<typeof vi.fn>) {
@@ -70,13 +87,15 @@ describe("runCleanup", () => {
     query.mockResolvedValue({ rowCount: 3 });
     await runCleanup(db);
     expect(log).toHaveBeenCalledWith("[db] cleanup removed 3 profiles");
+    expect(log).toHaveBeenCalledWith("[db] cleanup removed 3 link codes");
   });
 
-  it("logs a failing step instead of throwing", async () => {
+  it("logs a failing step instead of throwing, and goes on to the next", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const { db } = fakeDb(vi.fn().mockRejectedValue(new Error("connection refused")));
     await expect(runCleanup(db)).resolves.toBeUndefined();
     expect(error).toHaveBeenCalledWith("[db] cleanup of profiles failed", expect.any(Error));
+    expect(error).toHaveBeenCalledWith("[db] cleanup of link codes failed", expect.any(Error));
   });
 });
 
@@ -89,9 +108,9 @@ describe("scheduleCleanup", () => {
     vi.useFakeTimers();
     const { db, query } = fakeDb(vi.fn().mockResolvedValue({ rowCount: 0 }));
     const timer = scheduleCleanup(db, 1000);
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(query).toHaveBeenCalledTimes(1); // the first step starts at once; the next follows when it settles
     await vi.advanceTimersByTimeAsync(2000);
-    expect(query).toHaveBeenCalledTimes(3);
+    expect(query).toHaveBeenCalledTimes(3 * 2); // three runs of two steps (profiles, link codes), one query each
     clearInterval(timer);
   });
 

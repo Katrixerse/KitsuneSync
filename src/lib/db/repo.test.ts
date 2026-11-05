@@ -124,6 +124,69 @@ describe.skipIf(!process.env.DATABASE_URL)("repo (Postgres)", () => {
     expect(await repo.countSeries(db, randomUUID())).toBe(0);
   });
 
+  describe("link codes", () => {
+    const inTenMinutes = () => new Date(Date.now() + 10 * 60 * 1000);
+
+    it("keeps one code per profile and hands it out once", async () => {
+      const db = getPool();
+      await repo.createLinkCode(db, profileId, "AAAAAAAA", inTenMinutes());
+      await repo.createLinkCode(db, profileId, "BBBBBBBB", inTenMinutes());
+      // Making a new code retires the old one.
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "AAAAAAAA"))).toBeNull();
+
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "BBBBBBBB"))).toBe(profileId);
+      // Used up: the second redemption finds nothing.
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "BBBBBBBB"))).toBeNull();
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "CCCCCCCC"))).toBeNull();
+    });
+
+    it("ignores an expired code", async () => {
+      const db = getPool();
+      await repo.createLinkCode(db, profileId, "DDDDDDDD", new Date(Date.now() - 1000));
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "DDDDDDDD"))).toBeNull();
+      // Still there, just unusable: `now` decides, so a clock from before the expiry would find it.
+      const earlier = new Date(Date.now() - 60_000);
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "DDDDDDDD", earlier))).toBe(profileId);
+    });
+
+    it("rolls a redemption back with its transaction", async () => {
+      const db = getPool();
+      await repo.createLinkCode(db, profileId, "EEEEEEEE", inTenMinutes());
+      await expect(
+        withTransaction(async (tx) => {
+          expect(await repo.consumeLinkCode(tx, "EEEEEEEE")).toBe(profileId);
+          throw new Error("later step failed");
+        }),
+      ).rejects.toThrow("later step failed");
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "EEEEEEEE"))).toBe(profileId);
+    });
+
+    it("drops expired codes and counts them", async () => {
+      const db = getPool();
+      const other = randomUUID();
+      await repo.touchProfile(db, other);
+      try {
+        await repo.deleteExpiredLinkCodes(db); // whatever earlier runs left behind
+        await repo.createLinkCode(db, profileId, "FFFFFFFF", new Date(Date.now() - 1000));
+        await repo.createLinkCode(db, other, "GGGGGGGG", inTenMinutes());
+        expect(await repo.deleteExpiredLinkCodes(db)).toBe(1);
+        expect(await repo.deleteExpiredLinkCodes(db)).toBe(0);
+        expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "GGGGGGGG"))).toBe(other);
+      } finally {
+        await repo.deleteProfile(db, other);
+      }
+    });
+
+    it("goes with its profile", async () => {
+      const db = getPool();
+      const other = randomUUID();
+      await repo.touchProfile(db, other);
+      await repo.createLinkCode(db, other, "HHHHHHHH", inTenMinutes());
+      await repo.deleteProfile(db, other);
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "HHHHHHHH"))).toBeNull();
+    });
+  });
+
   it("deleting a profile removes everything", async () => {
     const other = randomUUID();
     await repo.touchProfile(getPool(), other);

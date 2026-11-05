@@ -1,3 +1,4 @@
+import { LINK_CODE_ALPHABET, LINK_CODE_LENGTH, normalizeLinkCode } from "./link-code";
 import { EDITION_LABELS, MAX_VOLUMES, type Edition, type Shelf, type ShelfSeries } from "./shelf";
 import type { ManualWish, WishlistState } from "./wishlist";
 
@@ -19,6 +20,7 @@ const COVER_PREFIX = "https://s4.anilist.co/file/";
 const SITE_PREFIX = "https://anilist.co/";
 // AniList cover colours are 6-digit hex.
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+const LINK_CODE = new RegExp(`^[${LINK_CODE_ALPHABET}]{${LINK_CODE_LENGTH}}$`);
 
 export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID.test(value);
@@ -138,6 +140,13 @@ export function parseWishlist(input: unknown): WishlistState {
   assertDismissedCount(dismissed.length);
   const wishes = new Map(manual.map(parseManualWish).map((w) => [w.id, w]));
   return { manual: [...wishes.values()], dismissed: [...new Set(dismissed.map(parseDismissKey))] };
+}
+
+/** A link code as typed on the other device; case, spaces and dashes don't matter. */
+export function parseLinkCode(input: unknown): string {
+  const code = typeof input === "string" ? normalizeLinkCode(input) : "";
+  if (!LINK_CODE.test(code)) throw new ValidationError("That doesn't look like a link code.");
+  return code;
 }
 
 /** Parses a KitsuneSync backup file. The AniList library is re-synced, not restored. */

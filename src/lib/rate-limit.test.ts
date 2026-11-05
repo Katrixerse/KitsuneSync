@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { RateLimiter, SYNC_LIMIT, SYNC_WINDOW_MS, syncLimiter } from "./rate-limit";
+import {
+  LINK_ATTEMPT_LIMIT,
+  LINK_ATTEMPT_WINDOW_MS,
+  linkLimiter,
+  RateLimiter,
+  SYNC_LIMIT,
+  SYNC_WINDOW_MS,
+  syncLimiter,
+} from "./rate-limit";
 
 function clock(start = 0) {
   let t = start;
@@ -59,5 +67,12 @@ describe("RateLimiter", () => {
     expect(SYNC_LIMIT).toBe(10);
     expect(SYNC_WINDOW_MS).toBe(60_000);
     expect(syncLimiter).toBeInstanceOf(RateLimiter);
+  });
+
+  it("ships a separate limiter for link-code attempts", () => {
+    expect(LINK_ATTEMPT_LIMIT).toBe(10);
+    expect(LINK_ATTEMPT_WINDOW_MS).toBe(60_000);
+    expect(linkLimiter).toBeInstanceOf(RateLimiter);
+    expect(linkLimiter).not.toBe(syncLimiter);
   });
 });

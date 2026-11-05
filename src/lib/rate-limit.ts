@@ -63,3 +63,10 @@ export const SYNC_WINDOW_MS = 60_000;
 
 /** Limits syncLibraryAction, the one action that calls out to AniList. */
 export const syncLimiter = new RateLimiter(SYNC_LIMIT, SYNC_WINDOW_MS);
+
+/** Link-code redemptions allowed per profile (or per IP) in one window, so codes can't be guessed. */
+export const LINK_ATTEMPT_LIMIT = 10;
+export const LINK_ATTEMPT_WINDOW_MS = 60_000;
+
+/** Limits redeemLinkCodeAction. Every attempt counts, right or wrong. */
+export const linkLimiter = new RateLimiter(LINK_ATTEMPT_LIMIT, LINK_ATTEMPT_WINDOW_MS);

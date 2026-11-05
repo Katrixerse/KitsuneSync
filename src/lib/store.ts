@@ -3,10 +3,12 @@
 import { createContext, createElement, use, useLayoutEffect, useSyncExternalStore, type ReactNode } from "react";
 import {
   addManualWishAction,
+  createLinkCodeAction,
   dismissWishAction,
   importBackupAction,
   loadDemoAction,
   loadStateAction,
+  redeemLinkCodeAction,
   removeSeriesAction,
   resetAllAction,
   restoreDismissedAction,
@@ -218,4 +220,19 @@ export function exportBackup(): string {
 export function importBackup(json: string) {
   const backup = parseBackup(json);
   mutate((prev) => ({ ...prev, ...backup }), () => importBackupAction(backup));
+}
+
+/** A one-time code that opens this profile on another device. Nothing changes locally. */
+export function createLinkCode() {
+  return createLinkCodeAction();
+}
+
+/**
+ * Switches this browser to the profile behind `code`. On success the store shows
+ * that profile from now on; on failure nothing changes and the result says why.
+ */
+export async function linkProfile(code: string) {
+  const result = await redeemLinkCodeAction(code);
+  if (result.ok) setState(() => result.state);
+  return result;
 }

@@ -4,10 +4,11 @@ import { headers } from "next/headers";
 import { AniListError, fetchLibrary } from "@/lib/anilist/client";
 import type { Library } from "@/lib/anilist/types";
 import * as repo from "@/lib/db/repo";
-import { getPool } from "@/lib/db/pool";
+import { getPool, withTransaction } from "@/lib/db/pool";
 import { DEMO_USERNAME, demoLibrary, demoShelf } from "@/lib/demo";
-import { syncLimiter } from "@/lib/rate-limit";
-import { currentProfileId, forgetProfile, loadCurrentState, withProfile } from "@/lib/session";
+import { formatLinkCode, generateLinkCode, LINK_CODE_TTL_MS } from "@/lib/link-code";
+import { linkLimiter, syncLimiter } from "@/lib/rate-limit";
+import { currentProfileId, forgetProfile, loadCurrentState, setProfileCookie, withProfile } from "@/lib/session";
 import { applySync, EMPTY_STATE, type KitsuneState } from "@/lib/state";
 import { libraryCache } from "@/lib/sync-cache";
 import {
@@ -15,10 +16,12 @@ import {
   assertManualWishCount,
   assertShelfSize,
   parseDismissKey,
+  parseLinkCode,
   parseManualWish,
   parseShelf,
   parseShelfSeries,
   parseWishlist,
+  ValidationError,
 } from "@/lib/validate";
 
 /**
@@ -28,9 +31,11 @@ import {
  */
 
 export type SyncResult = { ok: true; library: Library } | { ok: false; error: string };
+export type LinkCodeResult = { ok: true; code: string; expiresAt: string } | { ok: false; error: string };
+export type LinkResult = { ok: true; state: KitsuneState } | { ok: false; error: string };
 
-/** Who is syncing: the profile when the browser has one, else the client IP so limits apply before the first save too. */
-async function syncLimitKey(): Promise<string> {
+/** Who is asking, for rate limits: the profile when the browser has one, else the client IP so limits apply before the first save too. */
+async function limitKey(): Promise<string> {
   const profileId = await currentProfileId();
   if (profileId) return `profile:${profileId}`;
   // Behind a reverse proxy the first x-forwarded-for entry is the client.
@@ -54,7 +59,7 @@ export async function syncLibraryAction(userName: unknown): Promise<SyncResult> 
   const user = typeof userName === "string" ? userName.trim() : "";
   if (!user) return { ok: false, error: "Enter an AniList username." };
   if (user.length > 100) return { ok: false, error: "That username is too long." };
-  if (!syncLimiter.allow(await syncLimitKey())) return { ok: false, error: "Too many syncs. Try again in a minute." };
+  if (!syncLimiter.allow(await limitKey())) return { ok: false, error: "Too many syncs. Try again in a minute." };
 
   let library: Library;
   try {
@@ -146,4 +151,43 @@ export async function resetAllAction() {
   const profileId = await currentProfileId();
   if (profileId) await repo.deleteProfile(getPool(), profileId);
   await forgetProfile();
+}
+
+/** A one-time code that opens this browser's profile on another device. Replaces the profile's earlier code. */
+export async function createLinkCodeAction(): Promise<LinkCodeResult> {
+  // A browser without a profile has nothing to link; making one here would only create an empty profile.
+  if (!(await currentProfileId())) return { ok: false, error: "Nothing to link yet. Sync or add something first." };
+  const code = generateLinkCode();
+  const expiresAt = new Date(Date.now() + LINK_CODE_TTL_MS);
+  await withProfile((db, profileId) => repo.createLinkCode(db, profileId, code, expiresAt));
+  return { ok: true, code: formatLinkCode(code), expiresAt: expiresAt.toISOString() };
+}
+
+/**
+ * Points this browser at the profile behind a link code, and returns that profile's
+ * data. The profile the browser had before stays on the server untouched (cleanup
+ * removes it in time if it is empty). Errors are returned, not thrown: Next hides
+ * the message of a thrown error from the client in production.
+ */
+export async function redeemLinkCodeAction(input: unknown): Promise<LinkResult> {
+  let code: string;
+  try {
+    code = parseLinkCode(input);
+  } catch (err) {
+    if (err instanceof ValidationError) return { ok: false, error: err.message };
+    throw err;
+  }
+  if (!linkLimiter.allow(await limitKey())) return { ok: false, error: "Too many attempts. Try again in a minute." };
+
+  const current = await currentProfileId();
+  const linked = await withTransaction(async (db) => {
+    const profileId = await repo.consumeLinkCode(db, code);
+    if (!profileId) return null;
+    // Redeeming your own code switches nothing, but the code is still used up.
+    if (profileId !== current) await repo.touchProfile(db, profileId);
+    return { profileId, state: await repo.loadState(db, profileId) };
+  });
+  if (!linked) return { ok: false, error: "That code is invalid or has expired." };
+  if (linked.profileId !== current) await setProfileCookie(linked.profileId);
+  return { ok: true, state: linked.state };
 }

@@ -8,6 +8,7 @@ import {
   MAX_MANUAL_WISHES,
   MAX_SHELF_SERIES,
   parseBackup,
+  parseLinkCode,
   parseShelf,
   parseShelfSeries,
   parseWishlist,
@@ -151,6 +152,40 @@ describe("parseBackup", () => {
   it("rejects other JSON", () => {
     expect(() => parseBackup('{"hello":1}')).toThrow("isn't a KitsuneSync backup");
     expect(() => parseBackup("nope")).toThrow("isn't valid JSON");
+  });
+});
+
+describe("parseLinkCode", () => {
+  it.each([
+    ["a bare code", "ABCDEFGH"],
+    ["a dashed code", "ABCD-EFGH"],
+    ["lowercase", "abcd-efgh"],
+    ["spaces and padding", "  abcd efgh "],
+  ])("accepts %s", (_, input) => {
+    expect(parseLinkCode(input)).toBe("ABCDEFGH");
+  });
+
+  it("accepts every symbol of the alphabet", () => {
+    expect(parseLinkCode("hjkm-2345")).toBe("HJKM2345");
+    expect(parseLinkCode("WXYZ-6789")).toBe("WXYZ6789");
+  });
+
+  it.each([
+    ["a short code", "ABCD-EFG"],
+    ["a long code", "ABCD-EFGHJ"],
+    ["a zero", "ABCD-EFG0"],
+    ["a one", "ABCD-EFG1"],
+    ["an O", "ABCD-EFGO"],
+    ["an I", "ABCD-EFGI"],
+    ["a lowercase i", "abcd-efgi"],
+    ["punctuation", "ABCD_EFGH"],
+    ["an empty string", ""],
+    ["a number", 12345678],
+    ["nothing", undefined],
+    ["null", null],
+  ])("rejects %s", (_, input) => {
+    expect(() => parseLinkCode(input)).toThrow(ValidationError);
+    expect(() => parseLinkCode(input)).toThrow("That doesn't look like a link code.");
   });
 });
 

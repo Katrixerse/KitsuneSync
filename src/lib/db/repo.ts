@@ -214,3 +214,30 @@ export async function replaceWishlist(db: Db, profileId: string, wishlist: Wishl
     );
   }
 }
+
+/** Stores a one-time link code for the profile, replacing any earlier one so only the newest can be redeemed. */
+export async function createLinkCode(db: Db, profileId: string, code: string, expiresAt: Date) {
+  await db.query("DELETE FROM link_codes WHERE profile_id = $1", [profileId]);
+  await db.query("INSERT INTO link_codes (code, profile_id, expires_at) VALUES ($1, $2, $3)", [code, profileId, expiresAt]);
+}
+
+/**
+ * Redeems a link code: returns its profile and deletes it, or null when the code is
+ * unknown or has expired. Call inside a transaction: the row is locked, so two
+ * redemptions of one code can't both succeed.
+ */
+export async function consumeLinkCode(db: Db, code: string, now = new Date()): Promise<string | null> {
+  const { rows } = await db.query<{ profile_id: string }>(
+    "SELECT profile_id FROM link_codes WHERE code = $1 AND expires_at > $2 FOR UPDATE",
+    [code, now],
+  );
+  if (!rows.length) return null;
+  await db.query("DELETE FROM link_codes WHERE code = $1", [code]);
+  return rows[0].profile_id;
+}
+
+/** Drops codes past their expiry (redeeming ignores them anyway) and returns how many went. */
+export async function deleteExpiredLinkCodes(db: Db): Promise<number> {
+  const { rowCount } = await db.query("DELETE FROM link_codes WHERE expires_at <= now()");
+  return rowCount ?? 0;
+}

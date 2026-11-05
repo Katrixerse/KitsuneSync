@@ -54,6 +54,20 @@ export const MIGRATIONS: { id: number; name: string; sql: string }[] = [
       );
     `,
   },
+  {
+    id: 2,
+    name: "link_codes",
+    sql: `
+      -- One-time codes that open a profile on another device (see lib/link-code.ts).
+      -- A code is deleted when redeemed; expired ones go with the daily cleanup.
+      CREATE TABLE link_codes (
+        code text PRIMARY KEY,
+        profile_id uuid NOT NULL REFERENCES profiles (id) ON DELETE CASCADE,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        expires_at timestamptz NOT NULL
+      );
+    `,
+  },
 ];
 
 // Arbitrary constant so concurrent server starts don't race each other.

@@ -3,19 +3,37 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { migrate } from "@/lib/db/migrate";
 import { getPool } from "@/lib/db/pool";
 import * as repo from "@/lib/db/repo";
-import { SYNC_LIMIT } from "@/lib/rate-limit";
+import { demoLibrary } from "@/lib/demo";
+import { generateLinkCode, LINK_CODE_TTL_MS } from "@/lib/link-code";
+import { LINK_ATTEMPT_LIMIT, SYNC_LIMIT } from "@/lib/rate-limit";
 import type { ShelfSeries } from "@/lib/shelf";
 import { libraryCache } from "@/lib/sync-cache";
 import { MAX_DISMISSED_KEYS, MAX_MANUAL_WISHES, MAX_SHELF_SERIES, ValidationError } from "@/lib/validate";
-import { addManualWishAction, dismissWishAction, syncLibraryAction, upsertSeriesAction } from "./actions";
+import {
+  addManualWishAction,
+  createLinkCodeAction,
+  dismissWishAction,
+  redeemLinkCodeAction,
+  syncLibraryAction,
+  upsertSeriesAction,
+} from "./actions";
 
 // The actions read the profile cookie and request headers through next/headers,
-// which only works inside a request, so the "request" is simulated here.
-const request = vi.hoisted(() => ({ profileId: null as string | null, forwardedFor: null as string | null }));
+// which only works inside a request, so the "request" is simulated here. A cookie
+// the action sets is sent back on the next call, as a browser would.
+const request = vi.hoisted(() => ({
+  profileId: null as string | null,
+  forwardedFor: null as string | null,
+  setCookie: null as { value: string; options: Record<string, unknown> } | null,
+}));
 vi.mock("next/headers", () => ({
   cookies: async () => ({
     get: (name: string) => (name === "kitsune_profile" && request.profileId ? { value: request.profileId } : undefined),
-    set: () => {},
+    set: (name: string, value: string, options: Record<string, unknown>) => {
+      if (name !== "kitsune_profile") return;
+      request.profileId = value;
+      request.setCookie = { value, options };
+    },
     delete: () => {},
   }),
   headers: async () => new Headers(request.forwardedFor ? { "x-forwarded-for": request.forwardedFor } : {}),
@@ -51,8 +69,12 @@ describe.skipIf(!process.env.DATABASE_URL)("actions (Postgres)", () => {
     await repo.touchProfile(getPool(), id);
     request.profileId = id;
     request.forwardedFor = null;
+    request.setCookie = null;
     return id;
   }
+
+  const INVALID = { ok: false, error: "That code is invalid or has expired." };
+  const TOO_MANY = { ok: false, error: "Too many attempts. Try again in a minute." };
 
   beforeAll(async () => {
     await migrate();
@@ -164,5 +186,122 @@ describe.skipIf(!process.env.DATABASE_URL)("actions (Postgres)", () => {
     libraryCache.clear();
     await syncLibraryAction("Tester");
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  describe("link codes", () => {
+    it("has nothing to link for a browser without a profile", async () => {
+      request.profileId = null;
+      request.setCookie = null;
+      expect(await createLinkCodeAction()).toEqual({ ok: false, error: "Nothing to link yet. Sync or add something first." });
+      // No profile was made along the way.
+      expect(request.setCookie).toBeNull();
+      expect(request.profileId).toBeNull();
+    });
+
+    it("links another browser to the profile behind a code, once", async () => {
+      const source = await freshProfile();
+      await repo.saveLibrary(getPool(), source, demoLibrary());
+      const before = Date.now();
+      const made = await createLinkCodeAction();
+      expect(made).toMatchObject({ ok: true, code: expect.stringMatching(/^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/) });
+      if (!made.ok) throw new Error("unreachable");
+      const expiresAt = new Date(made.expiresAt).getTime();
+      expect(expiresAt).toBeGreaterThanOrEqual(before + LINK_CODE_TTL_MS);
+      expect(expiresAt).toBeLessThanOrEqual(Date.now() + LINK_CODE_TTL_MS);
+      expect(request.setCookie).toBeNull(); // this browser already had its cookie
+
+      // The other browser has its own profile with a shelf, and types the code sloppily.
+      const other = await freshProfile();
+      await repo.upsertSeries(getPool(), other, series(1));
+      const linked = await redeemLinkCodeAction(made.code.toLowerCase().replace("-", " "));
+      expect(linked).toMatchObject({ ok: true, state: { library: { user: { name: demoLibrary().user.name } }, shelf: {} } });
+      expect(request.profileId).toBe(source);
+      expect(request.setCookie).toEqual({
+        value: source,
+        options: { httpOnly: true, sameSite: "lax", secure: false, maxAge: 400 * 24 * 60 * 60, path: "/" },
+      });
+      // What the other browser had stays on the server, just no longer shown there.
+      expect((await repo.loadState(getPool(), other)).shelf[1]).toMatchObject({ title: "Series 1" });
+
+      // Used up: the same code (now from the linked browser) is refused.
+      expect(await redeemLinkCodeAction(made.code)).toEqual(INVALID);
+    });
+
+    it("links a browser that has no profile yet", async () => {
+      const source = await freshProfile();
+      await repo.upsertSeries(getPool(), source, series(2));
+      const made = await createLinkCodeAction();
+      if (!made.ok) throw new Error(made.error);
+
+      request.profileId = null;
+      request.forwardedFor = "203.0.113.77";
+      const linked = await redeemLinkCodeAction(made.code);
+      expect(linked).toMatchObject({ ok: true, state: { library: null, shelf: { 2: { title: "Series 2" } } } });
+      expect(request.profileId).toBe(source);
+    });
+
+    it("uses up your own code without changing anything", async () => {
+      const profileId = await freshProfile();
+      await repo.upsertSeries(getPool(), profileId, series(3));
+      const made = await createLinkCodeAction();
+      if (!made.ok) throw new Error(made.error);
+      // A new code retires the old one.
+      const again = await createLinkCodeAction();
+      if (!again.ok) throw new Error(again.error);
+      expect(await redeemLinkCodeAction(made.code)).toEqual(INVALID);
+
+      expect(await redeemLinkCodeAction(again.code)).toEqual({ ok: true, state: await repo.loadState(getPool(), profileId) });
+      expect(request.setCookie).toBeNull();
+      expect(request.profileId).toBe(profileId);
+      expect(await redeemLinkCodeAction(again.code)).toEqual(INVALID);
+    });
+
+    it("turns down codes that aren't codes before touching anything", async () => {
+      const profileId = await freshProfile();
+      for (const input of ["nope", "ABCD-EFG0", "", 12345678, undefined, null]) {
+        expect(await redeemLinkCodeAction(input)).toEqual({ ok: false, error: "That doesn't look like a link code." });
+      }
+      expect(request.profileId).toBe(profileId);
+      expect(request.setCookie).toBeNull();
+    });
+
+    it("refuses an expired code", async () => {
+      const source = await freshProfile();
+      const code = generateLinkCode();
+      await repo.createLinkCode(getPool(), source, code, new Date(Date.now() - 1000));
+
+      const other = await freshProfile();
+      expect(await redeemLinkCodeAction(code)).toEqual(INVALID);
+      expect(request.profileId).toBe(other);
+      expect(request.setCookie).toBeNull();
+    });
+
+    it("limits attempts per profile, and keeps a real code for later", async () => {
+      const source = await freshProfile();
+      const made = await createLinkCodeAction();
+      if (!made.ok) throw new Error(made.error);
+
+      const guesser = await freshProfile();
+      for (let i = 0; i < LINK_ATTEMPT_LIMIT; i++) expect(await redeemLinkCodeAction("ZZZZ-ZZZZ")).toEqual(INVALID);
+      expect(await redeemLinkCodeAction("ZZZZ-ZZZZ")).toEqual(TOO_MANY);
+      // Even the right code is refused while the limit holds, and it is not used up by that.
+      expect(await redeemLinkCodeAction(made.code)).toEqual(TOO_MANY);
+      expect(request.profileId).toBe(guesser);
+
+      await freshProfile();
+      expect(await redeemLinkCodeAction(made.code)).toMatchObject({ ok: true });
+      expect(request.profileId).toBe(source);
+    });
+
+    it("limits attempts per client IP before a profile exists", async () => {
+      request.profileId = null;
+      request.forwardedFor = "203.0.113.78, 10.0.0.1";
+      for (let i = 0; i < LINK_ATTEMPT_LIMIT; i++) expect(await redeemLinkCodeAction("ZZZZ-ZZZZ")).toEqual(INVALID);
+      expect(await redeemLinkCodeAction("ZZZZ-ZZZZ")).toEqual(TOO_MANY);
+      expect(request.profileId).toBeNull();
+
+      request.forwardedFor = "203.0.113.79";
+      expect(await redeemLinkCodeAction("ZZZZ-ZZZZ")).toEqual(INVALID);
+    });
   });
 });
