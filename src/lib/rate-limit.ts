@@ -34,11 +34,12 @@ export class RateLimiter {
     return true;
   }
 
-  /** Number of keys currently remembered. */
+  /** Number of keys currently remembered. For tests. */
   get size(): number {
     return this.hits.size;
   }
 
+  /** For tests, which share the limiters below. */
   clear() {
     this.hits.clear();
   }
@@ -57,14 +58,14 @@ export class RateLimiter {
   }
 }
 
-/** Syncs allowed per profile (or per IP before a profile exists) in one window. */
+/** Syncs allowed per client IP, and per profile, in one window (see limitKeys in app/actions.ts). */
 export const SYNC_LIMIT = 10;
 export const SYNC_WINDOW_MS = 60_000;
 
 /** Limits syncLibraryAction, the one action that calls out to AniList. */
 export const syncLimiter = new RateLimiter(SYNC_LIMIT, SYNC_WINDOW_MS);
 
-/** Link-code redemptions allowed per profile (or per IP) in one window, so codes can't be guessed. */
+/** Link-code redemptions allowed per client IP, and per profile, in one window, so codes can't be guessed. */
 export const LINK_ATTEMPT_LIMIT = 10;
 export const LINK_ATTEMPT_WINDOW_MS = 60_000;
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+// Lives in src/ rather than beside next.config.ts because vitest only looks for tests under src/ (vitest.config.mts).
 import nextConfig, { securityHeaders } from "../next.config";
 
 /** The CSP as { directive: sources }. */

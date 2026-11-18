@@ -10,7 +10,7 @@ export function Settings() {
   const { library, shelf } = useKitsune();
   const fileRef = useRef<HTMLInputElement>(null);
   const [message, setMessage] = useState<Message | null>(null);
-  const [linkCode, setLinkCode] = useState<string | null>(null);
+  const [linkCode, setLinkCode] = useState<{ code: string; expiresAt: string } | null>(null);
   const [codeInput, setCodeInput] = useState("");
   const [linking, setLinking] = useState(false);
   const [linkMessage, setLinkMessage] = useState<Message | null>(null);
@@ -42,7 +42,7 @@ export function Settings() {
     setLinkMessage(null);
     try {
       const result = await createLinkCode();
-      if (result.ok) setLinkCode(result.code);
+      if (result.ok) setLinkCode({ code: result.code, expiresAt: result.expiresAt });
       else setLinkMessage({ ok: false, text: result.error });
     } catch (err) {
       console.error(err);
@@ -124,9 +124,16 @@ export function Settings() {
         {linkCode ? (
           <div className="mb-4">
             <p className="font-mono text-3xl font-bold tracking-[0.2em] text-neon-cyan" aria-live="polite">
-              {linkCode}
+              {linkCode.code}
             </p>
-            <p className="mt-2 text-sm text-mute">Expires in 10 minutes. Enter it in Settings on the other device.</p>
+            {/* Only ever rendered on the client, after the action answers, so the locale time can't mismatch a server render. */}
+            <p className="mt-2 text-sm text-mute">
+              Expires at{" "}
+              <time dateTime={linkCode.expiresAt}>
+                {new Date(linkCode.expiresAt).toLocaleTimeString(undefined, { timeStyle: "short" })}
+              </time>
+              . Enter it in Settings on the other device.
+            </p>
             <button type="button" className="btn btn-ghost mt-3 px-3 py-1" onClick={showLinkCode} disabled={linking}>
               New code
             </button>

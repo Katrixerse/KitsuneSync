@@ -189,7 +189,7 @@ describe("store", () => {
     expect(store.readStore()).toEqual({ state: stateWith(b), saveError: null });
   });
 
-  it("reports an unreachable server when the reload fails too", async () => {
+  it("reports an unreachable server when the reload fails too, and reloads once it is back", async () => {
     actions.upsertSeriesAction.mockRejectedValueOnce(new Error("boom"));
     actions.loadStateAction.mockRejectedValueOnce(new Error("offline"));
 
@@ -199,6 +199,26 @@ describe("store", () => {
       state: stateWith(a),
       saveError: "Can't reach the server. Changes aren't being saved.",
     });
+
+    // The server is back: the next save goes through, and the reload the failed save asked for finally runs,
+    // so the edit the server never got doesn't live on locally.
+    actions.upsertSeriesAction.mockResolvedValueOnce(undefined);
+    actions.loadStateAction.mockResolvedValueOnce(stateWith(b));
+    store.upsertSeries(b);
+    await flush();
+    await flush();
+    expect(actions.loadStateAction).toHaveBeenCalledTimes(2);
+    expect(store.readStore()).toEqual({ state: stateWith(b), saveError: null });
+  });
+
+  it("asks an unreachable server once, not in a loop", async () => {
+    actions.upsertSeriesAction.mockRejectedValueOnce(new Error("boom"));
+    actions.loadStateAction.mockRejectedValue(new Error("offline"));
+
+    store.upsertSeries(a);
+    for (let i = 0; i < 5; i++) await flush();
+    expect(actions.loadStateAction).toHaveBeenCalledTimes(1);
+    expect(store.readStore().saveError).toBe("Can't reach the server. Changes aren't being saved.");
   });
 
   describe("release alerts", () => {
@@ -230,12 +250,14 @@ describe("store", () => {
       expect(actions.dismissReleaseAction).not.toHaveBeenCalled();
     });
 
-    it("keeps alerts through a backup import", async () => {
+    it("keeps only the alerts for series the imported backup still has", async () => {
       actions.loadDemoAction.mockResolvedValueOnce(seeded);
       actions.importBackupAction.mockResolvedValueOnce(undefined);
       await store.loadDemo();
-      store.importBackup(JSON.stringify({ app: "kitsunesync", version: 1, shelf: {} }));
-      expect(store.readStore().state).toEqual({ ...EMPTY_STATE, releases: [alert, other] });
+      const backup = { app: "kitsunesync", version: 1, shelf: { [b.mediaId]: b } };
+      store.importBackup(JSON.stringify(backup));
+      expect(store.readStore().state).toEqual({ ...stateWith(b), releases: [other] });
+      expect(actions.importBackupAction).toHaveBeenCalledWith({ shelf: { [b.mediaId]: b }, wishlist: EMPTY_STATE.wishlist });
     });
   });
 

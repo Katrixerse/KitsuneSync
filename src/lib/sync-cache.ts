@@ -31,10 +31,12 @@ export class TtlCache<T> {
     }
   }
 
+  /** For tests. */
   get size(): number {
     return this.entries.size;
   }
 
+  /** For tests, which share libraryCache below. */
   clear() {
     this.entries.clear();
   }

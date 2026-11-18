@@ -274,6 +274,14 @@ export async function dismissRelease(db: Db, profileId: string, mediaId: number)
   await db.query("DELETE FROM release_alerts WHERE profile_id = $1 AND media_id = $2", [profileId, mediaId]);
 }
 
+/** Drops the alerts for every series not in `keepMediaIds`, e.g. after an import replaced the shelf. */
+export async function pruneReleases(db: Db, profileId: string, keepMediaIds: number[]) {
+  await db.query("DELETE FROM release_alerts WHERE profile_id = $1 AND media_id <> ALL($2::int[])", [
+    profileId,
+    keepMediaIds,
+  ]);
+}
+
 /** Stores a one-time link code for the profile, replacing any earlier one so only the newest can be redeemed. */
 export async function createLinkCode(db: Db, profileId: string, code: string, expiresAt: Date) {
   await db.query("DELETE FROM link_codes WHERE profile_id = $1", [profileId]);
@@ -282,17 +290,21 @@ export async function createLinkCode(db: Db, profileId: string, code: string, ex
 
 /**
  * Redeems a link code: returns its profile and deletes it, or null when the code is
- * unknown or has expired. Call inside a transaction: the row is locked, so two
- * redemptions of one code can't both succeed.
+ * unknown, has expired, or was used up or replaced meanwhile. Call inside a
+ * transaction. The profile row is locked (touched) before the code row goes, the
+ * order createLinkCode takes them in under withProfile, so a code redeemed while
+ * its owner asks for a new one waits instead of deadlocking.
  */
 export async function consumeLinkCode(db: Db, code: string, now = new Date()): Promise<string | null> {
   const { rows } = await db.query<{ profile_id: string }>(
-    "SELECT profile_id FROM link_codes WHERE code = $1 AND expires_at > $2 FOR UPDATE",
+    "SELECT profile_id FROM link_codes WHERE code = $1 AND expires_at > $2",
     [code, now],
   );
   if (!rows.length) return null;
-  await db.query("DELETE FROM link_codes WHERE code = $1", [code]);
-  return rows[0].profile_id;
+  await touchProfile(db, rows[0].profile_id);
+  // The delete is the claim: of two redemptions of one code, the second deletes nothing.
+  const { rowCount } = await db.query("DELETE FROM link_codes WHERE code = $1 AND expires_at > $2", [code, now]);
+  return rowCount ? rows[0].profile_id : null;
 }
 
 /** Drops codes past their expiry (redeeming ignores them anyway) and returns how many went. */

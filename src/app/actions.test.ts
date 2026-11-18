@@ -5,7 +5,7 @@ import { getPool } from "@/lib/db/pool";
 import * as repo from "@/lib/db/repo";
 import { demoLibrary, demoShelf } from "@/lib/demo";
 import { generateLinkCode, LINK_CODE_TTL_MS } from "@/lib/link-code";
-import { LINK_ATTEMPT_LIMIT, SYNC_LIMIT } from "@/lib/rate-limit";
+import { LINK_ATTEMPT_LIMIT, linkLimiter, SYNC_LIMIT, syncLimiter } from "@/lib/rate-limit";
 import type { ShelfSeries } from "@/lib/shelf";
 import { applySync, EMPTY_STATE } from "@/lib/state";
 import { libraryCache } from "@/lib/sync-cache";
@@ -88,6 +88,9 @@ describe.skipIf(!process.env.DATABASE_URL)("actions (Postgres)", () => {
 
   afterEach(() => {
     libraryCache.clear();
+    // Every test's requests come from the same "unknown" address unless it says otherwise.
+    syncLimiter.clear();
+    linkLimiter.clear();
     vi.unstubAllGlobals();
   });
 
@@ -151,13 +154,32 @@ describe.skipIf(!process.env.DATABASE_URL)("actions (Postgres)", () => {
     expect((await repo.loadState(getPool(), profileId)).wishlist.dismissed).toHaveLength(MAX_DISMISSED_KEYS);
   });
 
-  it("limits syncs per profile", async () => {
+  it("limits syncs per profile, whichever address they come from", async () => {
     await freshProfile();
+    request.forwardedFor = "203.0.113.20";
     for (let i = 0; i < SYNC_LIMIT; i++) expect(await syncLibraryAction("demo")).toMatchObject({ ok: true });
+    // The profile's budget is spent, even from an address with a fresh one.
+    request.forwardedFor = "203.0.113.21";
     expect(await syncLibraryAction("demo")).toEqual({ ok: false, error: "Too many syncs. Try again in a minute." });
-    // Another profile has its own budget.
+    // Another profile on that address has its own budget.
     await freshProfile();
+    request.forwardedFor = "203.0.113.21";
     expect(await syncLibraryAction("demo")).toMatchObject({ ok: true });
+  });
+
+  it("doesn't hand a made-up profile cookie a fresh sync budget", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    request.forwardedFor = "203.0.113.22";
+    // Refused on the username before any write, so the forged profiles are never created.
+    for (let i = 0; i < SYNC_LIMIT; i++) {
+      request.profileId = randomUUID();
+      expect(await syncLibraryAction("no spaces!")).toMatchObject({ ok: false, error: expect.stringContaining("username") });
+    }
+    request.profileId = randomUUID();
+    expect(await syncLibraryAction("no spaces!")).toEqual({ ok: false, error: "Too many syncs. Try again in a minute." });
+    expect(await syncLibraryAction("Tester")).toEqual({ ok: false, error: "Too many syncs. Try again in a minute." });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("limits syncs per client IP before a profile exists, without calling AniList", async () => {
@@ -229,23 +251,35 @@ describe.skipIf(!process.env.DATABASE_URL)("actions (Postgres)", () => {
 
     it("refuses ids that aren't ids", async () => {
       await freshProfile();
-      for (const input of ["1", 1.5, null, undefined, {}]) {
+      // 2^31 is past what the integer column holds, so it is refused here rather than by Postgres.
+      for (const input of ["1", 1.5, 0, 2 ** 31, null, undefined, {}]) {
         await expect(dismissReleaseAction(input)).rejects.toThrow("Invalid media id.");
       }
     });
 
-    it("seeds the demo with one alert, which goes with its series but survives an import", async () => {
+    it("seeds the demo with one alert, which goes with its series", async () => {
       const profileId = await freshProfile();
       const state = await loadDemoAction();
       expect(state.releases).toEqual([expect.objectContaining({ title: "Berserk", volumes: [43] })]);
       expect(await repo.loadState(getPool(), profileId)).toEqual(state);
 
-      // Importing a backup replaces the shelf and wishlist, not the alerts.
+      await removeSeriesAction(berserk.media.id);
+      const after = await repo.loadState(getPool(), profileId);
+      expect(after.shelf[berserk.media.id]).toBeUndefined();
+      expect(after.releases).toEqual([]);
+    });
+
+    it("keeps an alert through an import that still has its series, and drops it with one that doesn't", async () => {
+      const profileId = await freshProfile();
+      const state = await loadDemoAction();
+
       await importBackupAction({ shelf: state.shelf, wishlist: undefined });
       expect((await repo.loadState(getPool(), profileId)).releases).toEqual(state.releases);
 
-      await removeSeriesAction(berserk.media.id);
+      const withoutBerserk = Object.fromEntries(Object.entries(state.shelf).filter(([id]) => Number(id) !== berserk.media.id));
+      await importBackupAction({ shelf: withoutBerserk, wishlist: undefined });
       const after = await repo.loadState(getPool(), profileId);
+      expect(Object.keys(after.shelf)).toHaveLength(Object.keys(state.shelf).length - 1);
       expect(after.shelf[berserk.media.id]).toBeUndefined();
       expect(after.releases).toEqual([]);
     });
@@ -339,19 +373,41 @@ describe.skipIf(!process.env.DATABASE_URL)("actions (Postgres)", () => {
       expect(request.setCookie).toBeNull();
     });
 
-    it("limits attempts per profile, and keeps a real code for later", async () => {
+    it("limits attempts per profile, whichever address they come from, and keeps a real code for later", async () => {
       const source = await freshProfile();
       const made = await createLinkCodeAction();
       if (!made.ok) throw new Error(made.error);
 
       const guesser = await freshProfile();
+      request.forwardedFor = "203.0.113.30";
       for (let i = 0; i < LINK_ATTEMPT_LIMIT; i++) expect(await redeemLinkCodeAction("ZZZZ-ZZZZ")).toEqual(INVALID);
       expect(await redeemLinkCodeAction("ZZZZ-ZZZZ")).toEqual(TOO_MANY);
-      // Even the right code is refused while the limit holds, and it is not used up by that.
+      // Even the right code is refused while the limit holds, and it is not used up by that. Moving to an
+      // address with a fresh budget doesn't help: the profile's is spent.
+      request.forwardedFor = "203.0.113.31";
       expect(await redeemLinkCodeAction(made.code)).toEqual(TOO_MANY);
       expect(request.profileId).toBe(guesser);
 
       await freshProfile();
+      request.forwardedFor = "203.0.113.31";
+      expect(await redeemLinkCodeAction(made.code)).toMatchObject({ ok: true });
+      expect(request.profileId).toBe(source);
+    });
+
+    it("doesn't hand a made-up profile cookie a fresh budget of attempts", async () => {
+      const source = await freshProfile();
+      const made = await createLinkCodeAction();
+      if (!made.ok) throw new Error(made.error);
+
+      request.forwardedFor = "203.0.113.32";
+      for (let i = 0; i < LINK_ATTEMPT_LIMIT; i++) {
+        request.profileId = randomUUID();
+        expect(await redeemLinkCodeAction("ZZZZ-ZZZZ")).toEqual(INVALID);
+      }
+      request.profileId = randomUUID();
+      expect(await redeemLinkCodeAction(made.code)).toEqual(TOO_MANY);
+      // The address's budget, not the cookie's, is what ran out: the right code from elsewhere still works.
+      request.forwardedFor = "203.0.113.33";
       expect(await redeemLinkCodeAction(made.code)).toMatchObject({ ok: true });
       expect(request.profileId).toBe(source);
     });

@@ -21,9 +21,16 @@ const SITE_PREFIX = "https://anilist.co/";
 // AniList cover colours are 6-digit hex.
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 const LINK_CODE = new RegExp(`^[${LINK_CODE_ALPHABET}]{${LINK_CODE_LENGTH}}$`);
+// media_id columns are 32-bit integers; AniList ids are far smaller, hand-added series use small negative ones.
+const MAX_MEDIA_ID = 2_147_483_647;
 
 export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID.test(value);
+}
+
+/** An AniList media id, or a negative one for a series added by hand. Zero is neither. */
+export function isMediaId(value: unknown): value is number {
+  return Number.isInteger(value) && value !== 0 && Math.abs(value as number) <= MAX_MEDIA_ID;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -78,7 +85,7 @@ function volume(value: unknown): value is number {
 export function parseShelfSeries(input: unknown): ShelfSeries {
   if (!isRecord(input)) throw new ValidationError("Series must be an object.");
   const { mediaId, totalVolumes, releasedVolumes, owned = [], edition = "standard", ongoing = false } = input;
-  if (!Number.isSafeInteger(mediaId) || mediaId === 0) throw new ValidationError("Series needs a media id.");
+  if (!isMediaId(mediaId)) throw new ValidationError("Series needs a media id.");
   if (totalVolumes !== undefined && totalVolumes !== null && !volume(totalVolumes)) {
     throw new ValidationError("Total volumes is out of range.");
   }
@@ -92,7 +99,7 @@ export function parseShelfSeries(input: unknown): ShelfSeries {
   if (color !== null && !HEX_COLOR.test(color)) throw new ValidationError("Color must be a hex code like #e4a15d.");
 
   return {
-    mediaId: mediaId as number,
+    mediaId,
     title: text(input.title, "Title", 500),
     cover: optionalUrl(input.cover, "Cover", COVER_PREFIX, "Cover must be an AniList image URL."),
     color,

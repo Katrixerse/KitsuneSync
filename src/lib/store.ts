@@ -102,6 +102,7 @@ function mutate(update: (prev: KitsuneState) => KitsuneState, save: () => Promis
  * Replaces the local state with the server's after a failed save, once no
  * save is pending. A change made while the reload is in flight makes its
  * result stale, so it's dropped and the reload runs again after that save.
+ * A reload the server doesn't answer stays due, and runs after the next save.
  */
 async function reload() {
   if (!reloadNeeded || pending > 0 || reloading) return;
@@ -117,8 +118,12 @@ async function reload() {
       reloadNeeded = true;
     }
   } catch {
+    // Still due: the next settled save retries it. Not right away, or an
+    // unreachable server would be asked again and again in a loop.
+    reloadNeeded = true;
     saveError = "Can't reach the server. Changes aren't being saved.";
     emit();
+    return;
   } finally {
     reloading = false;
   }
@@ -225,10 +230,16 @@ export function exportBackup(): string {
   );
 }
 
-/** Restores the shelf and wishlist from a backup. The AniList library is re-synced, not restored. */
+/**
+ * Restores the shelf and wishlist from a backup. The AniList library is re-synced,
+ * not restored. Alerts for series the backup doesn't have go, as when a series is removed.
+ */
 export function importBackup(json: string) {
   const backup = parseBackup(json);
-  mutate((prev) => ({ ...prev, ...backup }), () => importBackupAction(backup));
+  mutate(
+    (prev) => ({ ...prev, ...backup, releases: prev.releases.filter((r) => r.mediaId in backup.shelf) }),
+    () => importBackupAction(backup),
+  );
 }
 
 /** A one-time code that opens this profile on another device. Nothing changes locally. */

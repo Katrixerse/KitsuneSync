@@ -7,7 +7,7 @@ import * as repo from "@/lib/db/repo";
 import { getPool, withTransaction } from "@/lib/db/pool";
 import { DEMO_USERNAME, demoLibrary, demoShelf } from "@/lib/demo";
 import { formatLinkCode, generateLinkCode, LINK_CODE_TTL_MS } from "@/lib/link-code";
-import { linkLimiter, syncLimiter } from "@/lib/rate-limit";
+import { linkLimiter, syncLimiter, type RateLimiter } from "@/lib/rate-limit";
 import { currentProfileId, forgetProfile, loadCurrentState, setProfileCookie, withProfile } from "@/lib/session";
 import { applySync, EMPTY_STATE, type KitsuneState } from "@/lib/state";
 import { libraryCache } from "@/lib/sync-cache";
@@ -15,6 +15,7 @@ import {
   assertDismissedCount,
   assertManualWishCount,
   assertShelfSize,
+  isMediaId,
   parseDismissKey,
   parseLinkCode,
   parseManualWish,
@@ -34,13 +35,21 @@ export type SyncResult = { ok: true; library: Library } | { ok: false; error: st
 export type LinkCodeResult = { ok: true; code: string; expiresAt: string } | { ok: false; error: string };
 export type LinkResult = { ok: true; state: KitsuneState } | { ok: false; error: string };
 
-/** Who is asking, for rate limits: the profile when the browser has one, else the client IP so limits apply before the first save too. */
-async function limitKey(): Promise<string> {
-  const profileId = await currentProfileId();
-  if (profileId) return `profile:${profileId}`;
+/**
+ * Who is asking, for rate limits: always the client IP, so a browser can't buy a
+ * fresh budget by making up a profile cookie, and the profile too when there is
+ * one, so a profile can't spread its requests over many addresses.
+ */
+async function limitKeys(): Promise<string[]> {
   // Behind a reverse proxy the first x-forwarded-for entry is the client.
   const ip = (await headers()).get("x-forwarded-for")?.split(",")[0]?.trim();
-  return `ip:${ip || "unknown"}`;
+  const profileId = await currentProfileId();
+  return [`ip:${ip || "unknown"}`, ...(profileId ? [`profile:${profileId}`] : [])];
+}
+
+/** Counts the request in every bucket it belongs to, and refuses it when any of them is spent. */
+async function allow(limiter: RateLimiter): Promise<boolean> {
+  return (await limitKeys()).map((key) => limiter.allow(key)).every(Boolean);
 }
 
 /** A library from the one-minute cache when there is one, else freshly fetched. The demo never touches AniList. */
@@ -59,7 +68,7 @@ export async function syncLibraryAction(userName: unknown): Promise<SyncResult> 
   const user = typeof userName === "string" ? userName.trim() : "";
   if (!user) return { ok: false, error: "Enter an AniList username." };
   if (user.length > 100) return { ok: false, error: "That username is too long." };
-  if (!syncLimiter.allow(await limitKey())) return { ok: false, error: "Too many syncs. Try again in a minute." };
+  if (!(await allow(syncLimiter))) return { ok: false, error: "Too many syncs. Try again in a minute." };
 
   let library: Library;
   try {
@@ -112,13 +121,13 @@ export async function upsertSeriesAction(series: unknown) {
 
 /** Takes a series off the shelf, along with its release alert. */
 export async function removeSeriesAction(mediaId: unknown) {
-  if (!Number.isSafeInteger(mediaId)) throw new Error("Invalid media id.");
-  await withProfile((db, profileId) => repo.deleteSeries(db, profileId, mediaId as number));
+  if (!isMediaId(mediaId)) throw new Error("Invalid media id.");
+  await withProfile((db, profileId) => repo.deleteSeries(db, profileId, mediaId));
 }
 
 export async function dismissReleaseAction(mediaId: unknown) {
-  if (!Number.isSafeInteger(mediaId)) throw new Error("Invalid media id.");
-  await withProfile((db, profileId) => repo.dismissRelease(db, profileId, mediaId as number));
+  if (!isMediaId(mediaId)) throw new Error("Invalid media id.");
+  await withProfile((db, profileId) => repo.dismissRelease(db, profileId, mediaId));
 }
 
 export async function addManualWishAction(wish: unknown) {
@@ -146,11 +155,13 @@ export async function restoreDismissedAction() {
   await withProfile((db, profileId) => repo.clearDismissed(db, profileId));
 }
 
+/** Replaces the shelf and wishlist. An alert for a series the backup doesn't have goes with the series, as on removal. */
 export async function importBackupAction(backup: { shelf: unknown; wishlist: unknown }) {
   const shelf = parseShelf(backup?.shelf);
   const wishlist = parseWishlist(backup?.wishlist);
   await withProfile(async (db, profileId) => {
     await repo.replaceShelf(db, profileId, shelf);
+    await repo.pruneReleases(db, profileId, Object.values(shelf).map((s) => s.mediaId));
     await repo.replaceWishlist(db, profileId, wishlist);
   });
 }
@@ -186,17 +197,15 @@ export async function redeemLinkCodeAction(input: unknown): Promise<LinkResult> 
     if (err instanceof ValidationError) return { ok: false, error: err.message };
     throw err;
   }
-  if (!linkLimiter.allow(await limitKey())) return { ok: false, error: "Too many attempts. Try again in a minute." };
+  if (!(await allow(linkLimiter))) return { ok: false, error: "Too many attempts. Try again in a minute." };
 
   const current = await currentProfileId();
   const linked = await withTransaction(async (db) => {
     const profileId = await repo.consumeLinkCode(db, code);
-    if (!profileId) return null;
-    // Redeeming your own code switches nothing, but the code is still used up.
-    if (profileId !== current) await repo.touchProfile(db, profileId);
-    return { profileId, state: await repo.loadState(db, profileId) };
+    return profileId ? { profileId, state: await repo.loadState(db, profileId) } : null;
   });
   if (!linked) return { ok: false, error: "That code is invalid or has expired." };
+  // Redeeming your own code switches nothing, but the code is still used up.
   if (linked.profileId !== current) await setProfileCookie(linked.profileId);
   return { ok: true, state: linked.state };
 }

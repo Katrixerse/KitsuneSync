@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { demoLibrary, demoShelf } from "../demo";
+import { generateLinkCode } from "../link-code";
 import type { ReleaseAlert } from "../releases";
 import { seriesFromEntry } from "../shelf";
 import { EMPTY_STATE } from "../state";
@@ -55,12 +56,15 @@ describe.skipIf(!process.env.DATABASE_URL)("repo (Postgres)", () => {
 
   it("applies single-item changes", async () => {
     const db = getPool();
-    const before = await repo.loadState(db, profileId);
-    const [first] = Object.values(before.shelf);
+    // Seeded here rather than taken from the test above, so this one also passes on its own.
+    const [first] = demoLibrary().manga.map((e) => seriesFromEntry(e));
+    const wish = { id: randomUUID(), title: "Artbook", note: "signed", addedAt: "2026-01-01T00:00:00.000Z" };
+    await repo.replaceShelf(db, profileId, { [first.mediaId]: first });
+    await repo.replaceWishlist(db, profileId, { manual: [wish], dismissed: [] });
 
     await repo.upsertSeries(db, profileId, { ...first, owned: [1, 5], notes: "shelf B" });
     await repo.dismissKey(db, profileId, "gap:1:2");
-    await repo.deleteManualWish(db, profileId, before.wishlist.manual[0].id);
+    await repo.deleteManualWish(db, profileId, wish.id);
 
     const after = await repo.loadState(db, profileId);
     expect(after.shelf[first.mediaId]).toMatchObject({ owned: [1, 5], notes: "shelf B" });
@@ -100,6 +104,18 @@ describe.skipIf(!process.env.DATABASE_URL)("repo (Postgres)", () => {
       expect((await repo.loadState(db, profileId)).releases).toEqual([{ ...alerts[1], volumes: [2, 3, 4] }]);
 
       await repo.replaceReleases(db, profileId, []);
+      expect((await repo.loadState(db, profileId)).releases).toEqual([]);
+    });
+
+    it("prunes the alerts for series outside a kept set", async () => {
+      const db = getPool();
+      const alerts = [alert(3, [1], "2026-06-03T00:00:00.000Z"), alert(1, [2], "2026-06-02T00:00:00.000Z"), alert(2, [9], "2026-06-01T00:00:00.000Z")];
+      await repo.replaceReleases(db, profileId, alerts);
+
+      await repo.pruneReleases(db, profileId, [1, 3, 42]);
+      expect((await repo.loadState(db, profileId)).releases).toEqual([alerts[0], alerts[1]]);
+      // Keeping nothing leaves nothing.
+      await repo.pruneReleases(db, profileId, []);
       expect((await repo.loadState(db, profileId)).releases).toEqual([]);
     });
 
@@ -182,54 +198,82 @@ describe.skipIf(!process.env.DATABASE_URL)("repo (Postgres)", () => {
     expect(await repo.countSeries(db, randomUUID())).toBe(0);
   });
 
+  // Codes are primary keys on a table every test run shares, so they are generated rather than fixed: a run
+  // that stops before afterAll can't make the next one collide.
   describe("link codes", () => {
     const inTenMinutes = () => new Date(Date.now() + 10 * 60 * 1000);
 
     it("keeps one code per profile and hands it out once", async () => {
       const db = getPool();
-      await repo.createLinkCode(db, profileId, "AAAAAAAA", inTenMinutes());
-      await repo.createLinkCode(db, profileId, "BBBBBBBB", inTenMinutes());
+      const [first, second, unknown] = [generateLinkCode(), generateLinkCode(), generateLinkCode()];
+      await repo.createLinkCode(db, profileId, first, inTenMinutes());
+      await repo.createLinkCode(db, profileId, second, inTenMinutes());
       // Making a new code retires the old one.
-      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "AAAAAAAA"))).toBeNull();
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, first))).toBeNull();
 
-      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "BBBBBBBB"))).toBe(profileId);
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, second))).toBe(profileId);
       // Used up: the second redemption finds nothing.
-      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "BBBBBBBB"))).toBeNull();
-      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "CCCCCCCC"))).toBeNull();
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, second))).toBeNull();
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, unknown))).toBeNull();
     });
 
     it("ignores an expired code", async () => {
       const db = getPool();
-      await repo.createLinkCode(db, profileId, "DDDDDDDD", new Date(Date.now() - 1000));
-      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "DDDDDDDD"))).toBeNull();
-      // Still there, just unusable: `now` decides, so a clock from before the expiry would find it.
-      const earlier = new Date(Date.now() - 60_000);
-      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "DDDDDDDD", earlier))).toBe(profileId);
+      const code = generateLinkCode();
+      // `now` is passed in rather than letting the row expire for real: the cleanup suite runs alongside and
+      // deletes every expired row in the table, which would make "still there" a matter of timing.
+      await repo.createLinkCode(db, profileId, code, inTenMinutes());
+      const later = new Date(Date.now() + 11 * 60_000);
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, code, later))).toBeNull();
+      // A refused redemption leaves the row in place.
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, code))).toBe(profileId);
     });
 
     it("rolls a redemption back with its transaction", async () => {
       const db = getPool();
-      await repo.createLinkCode(db, profileId, "EEEEEEEE", inTenMinutes());
+      const code = generateLinkCode();
+      await repo.createLinkCode(db, profileId, code, inTenMinutes());
       await expect(
         withTransaction(async (tx) => {
-          expect(await repo.consumeLinkCode(tx, "EEEEEEEE")).toBe(profileId);
+          expect(await repo.consumeLinkCode(tx, code)).toBe(profileId);
           throw new Error("later step failed");
         }),
       ).rejects.toThrow("later step failed");
-      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "EEEEEEEE"))).toBe(profileId);
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, code))).toBe(profileId);
     });
 
-    it("drops expired codes and counts them", async () => {
+    it("waits for the profile row instead of deadlocking with a new code for the same profile", async () => {
+      const db = getPool();
+      const [code, replacement] = [generateLinkCode(), generateLinkCode()];
+      await repo.createLinkCode(db, profileId, code, inTenMinutes());
+      let redeeming!: Promise<string | null>;
+      await withTransaction(async (owner) => {
+        // The owner asks for a new code: withProfile locks the profile row first...
+        await repo.touchProfile(owner, profileId);
+        // ...while another device redeems the old one. Holding the code row and waiting for the profile row
+        // here would deadlock with the delete below; instead the redemption waits for the profile row.
+        redeeming = withTransaction((tx) => repo.consumeLinkCode(tx, code));
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        await repo.createLinkCode(owner, profileId, replacement, inTenMinutes());
+      });
+      // Replaced before it could be claimed: refused, not an error.
+      expect(await redeeming).toBeNull();
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, replacement))).toBe(profileId);
+    });
+
+    it("drops expired codes", async () => {
       const db = getPool();
       const other = randomUUID();
       await repo.touchProfile(db, other);
+      const [expired, live] = [generateLinkCode(), generateLinkCode()];
       try {
-        await repo.deleteExpiredLinkCodes(db); // whatever earlier runs left behind
-        await repo.createLinkCode(db, profileId, "FFFFFFFF", new Date(Date.now() - 1000));
-        await repo.createLinkCode(db, other, "GGGGGGGG", inTenMinutes());
-        expect(await repo.deleteExpiredLinkCodes(db)).toBe(1);
-        expect(await repo.deleteExpiredLinkCodes(db)).toBe(0);
-        expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "GGGGGGGG"))).toBe(other);
+        await repo.createLinkCode(db, profileId, expired, new Date(Date.now() - 1000));
+        await repo.createLinkCode(db, other, live, inTenMinutes());
+        // Checked by code, not by the returned count: the other Postgres suites' expired codes would add to it.
+        await repo.deleteExpiredLinkCodes(db);
+        // Gone, not merely unusable: a clock from before the expiry finds nothing either.
+        expect(await withTransaction((tx) => repo.consumeLinkCode(tx, expired, new Date(0)))).toBeNull();
+        expect(await withTransaction((tx) => repo.consumeLinkCode(tx, live))).toBe(other);
       } finally {
         await repo.deleteProfile(db, other);
       }
@@ -238,10 +282,11 @@ describe.skipIf(!process.env.DATABASE_URL)("repo (Postgres)", () => {
     it("goes with its profile", async () => {
       const db = getPool();
       const other = randomUUID();
+      const code = generateLinkCode();
       await repo.touchProfile(db, other);
-      await repo.createLinkCode(db, other, "HHHHHHHH", inTenMinutes());
+      await repo.createLinkCode(db, other, code, inTenMinutes());
       await repo.deleteProfile(db, other);
-      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, "HHHHHHHH"))).toBeNull();
+      expect(await withTransaction((tx) => repo.consumeLinkCode(tx, code))).toBeNull();
     });
   });
 

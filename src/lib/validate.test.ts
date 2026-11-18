@@ -70,6 +70,9 @@ describe("parseShelfSeries", () => {
   it.each([
     ["a missing id", { ...series, mediaId: undefined }],
     ["a fractional id", { ...series, mediaId: 1.5 }],
+    ["a zero id", { ...series, mediaId: 0 }],
+    ["an id the integer column can't hold", { ...series, mediaId: 2 ** 31 }],
+    ["a negative id the integer column can't hold", { ...series, mediaId: -(2 ** 31) }],
     ["out-of-range volumes", { ...series, owned: [0, 1] }],
     ["an unknown edition", { ...series, edition: "signed" }],
     ["a bad total", { ...series, totalVolumes: 999 }],
@@ -94,6 +97,11 @@ describe("parseShelfSeries", () => {
       siteUrl: null,
     });
     expect(parseShelfSeries({ mediaId: -1, title: "Art book" })).toMatchObject({ cover: null, color: null, siteUrl: null });
+  });
+
+  it("takes any id the integer column holds, either sign", () => {
+    expect(parseShelfSeries({ ...series, mediaId: 2 ** 31 - 1 }).mediaId).toBe(2 ** 31 - 1);
+    expect(parseShelfSeries({ ...series, mediaId: -(2 ** 31 - 1) }).mediaId).toBe(-(2 ** 31 - 1));
   });
 
   it.each([

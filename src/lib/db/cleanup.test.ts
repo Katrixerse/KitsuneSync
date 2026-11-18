@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { demoLibrary } from "../demo";
+import { generateLinkCode } from "../link-code";
 import { EMPTY_STATE } from "../state";
 import { cleanupProfiles, runCleanup, scheduleCleanup } from "./cleanup";
 import { migrate } from "./migrate";
@@ -53,19 +54,22 @@ describe.skipIf(!process.env.DATABASE_URL)("cleanupProfiles (Postgres)", () => {
 
   it("drops expired link codes as a step of the full run", async () => {
     const db = getPool();
-    await repo.deleteExpiredLinkCodes(db); // whatever earlier runs left behind
     const live = randomUUID();
     ids.push(live);
     await repo.touchProfile(db, live);
-    await repo.createLinkCode(db, activeOld, "CLEANUP1", new Date(Date.now() - 1000));
-    await repo.createLinkCode(db, live, "CLEANUP2", new Date(Date.now() + 60_000));
+    const [expired, current] = [generateLinkCode(), generateLinkCode()];
+    await repo.createLinkCode(db, activeOld, expired, new Date(Date.now() - 1000));
+    await repo.createLinkCode(db, live, current, new Date(Date.now() + 60_000));
+    // Checked by code, not by the count in the log line: the other Postgres suites run alongside this one and
+    // make and drop expired codes of their own (the line itself is covered by the fake-db test below).
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     await runCleanup(db);
-    expect(log).toHaveBeenCalledWith("[db] cleanup removed 1 link codes");
     log.mockRestore();
 
-    const { rows } = await db.query<{ code: string }>("SELECT code FROM link_codes WHERE code LIKE 'CLEANUP%'");
-    expect(rows.map((r) => r.code)).toEqual(["CLEANUP2"]);
+    const { rows } = await db.query<{ code: string }>("SELECT code FROM link_codes WHERE code = ANY($1::text[])", [
+      [expired, current],
+    ]);
+    expect(rows.map((r) => r.code)).toEqual([current]);
   });
 });
 
