@@ -7,9 +7,11 @@ import { Cover } from "@/components/Cover";
 import { IdCard } from "@/components/IdCard";
 import { RequireLibrary } from "@/components/RequireLibrary";
 import type { ListEntry } from "@/lib/anilist/types";
+import { issuedOn } from "@/lib/id-card";
 import { catCommentary, computeStats, daysWatched, type CatLine } from "@/lib/profile";
-import { shelfStats } from "@/lib/shelf";
-import type { KitsuneState } from "@/lib/store";
+import type { ReleaseAlert } from "@/lib/releases";
+import { formatRanges, shelfStats, type Shelf } from "@/lib/shelf";
+import { dismissRelease, type KitsuneState } from "@/lib/store";
 import type { Library } from "@/lib/anilist/types";
 import { buildWishlist } from "@/lib/wishlist";
 
@@ -17,7 +19,7 @@ export function Dashboard() {
   return <RequireLibrary>{(state) => <DashboardView {...state} />}</RequireLibrary>;
 }
 
-function DashboardView({ library, shelf, wishlist }: KitsuneState & { library: Library }) {
+function DashboardView({ library, shelf, wishlist, releases }: KitsuneState & { library: Library }) {
   const stats = useMemo(() => computeStats(library), [library]);
   const shelfInfo = useMemo(() => shelfStats(shelf), [shelf]);
   const wishCount = useMemo(
@@ -38,6 +40,8 @@ function DashboardView({ library, shelf, wishlist }: KitsuneState & { library: L
         <IdCard user={library.user} stats={stats} shelf={shelfInfo} syncedAt={library.syncedAt} />
         <CatPanel quips={quips} />
       </div>
+
+      {releases.length > 0 && <Releases releases={releases} shelf={shelf} />}
 
       <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
         <Tile label="Episodes" value={stats.episodes.toLocaleString()} />
@@ -75,6 +79,59 @@ function DashboardView({ library, shelf, wishlist }: KitsuneState & { library: L
         </section>
       </div>
     </div>
+  );
+}
+
+/** Volumes that came out since an earlier sync, one line per series, until dismissed. */
+function Releases({ releases, shelf }: { releases: ReleaseAlert[]; shelf: Shelf }) {
+  return (
+    <section className="panel p-5" aria-label="New releases">
+      <div className="mb-3 flex items-baseline justify-between">
+        <h2 className="label">New releases</h2>
+        <Link href="/wishlist" className="font-mono text-[11px] text-neon-cyan hover:underline">
+          wishlist →
+        </Link>
+      </div>
+      <ul className="grid gap-3 md:grid-cols-2">
+        {releases.map((r) => {
+          const siteUrl = shelf[r.mediaId]?.siteUrl;
+          return (
+            <li key={r.mediaId} className="flex items-center gap-3">
+              <Cover title={r.title} src={r.cover} color={r.color} sizes="40px" className="w-10 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-display font-semibold">
+                  {siteUrl ? (
+                    <a href={siteUrl} target="_blank" rel="noreferrer" className="hover:text-neon-cyan">
+                      {r.title}
+                    </a>
+                  ) : (
+                    r.title
+                  )}
+                </div>
+                <div className="font-mono text-xs">
+                  <span className="text-neon-green">
+                    Vol. {formatRanges(r.volumes)} {r.volumes.length === 1 ? "is" : "are"} out
+                  </span>
+                  <span className="text-mute">
+                    {" · "}
+                    <time dateTime={r.releasedAt} title="Noticed by the sync on this day">
+                      {issuedOn(r.releasedAt)}
+                    </time>
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost shrink-0 !px-2 !py-1 !text-[10px]"
+                onClick={() => dismissRelease(r.mediaId)}
+              >
+                Dismiss
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }
 

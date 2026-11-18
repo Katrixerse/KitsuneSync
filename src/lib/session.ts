@@ -34,17 +34,21 @@ export async function withProfile<T>(fn: (db: PoolClient, profileId: string) => 
     await touchProfile(db, profileId);
     return fn(db, profileId);
   });
-  if (!existing) {
-    const proto = (await headers()).get("x-forwarded-proto")?.split(",")[0]?.trim();
-    (await cookies()).set(COOKIE, profileId, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: proto === "https",
-      maxAge: MAX_AGE,
-      path: "/",
-    });
-  }
+  if (!existing) await setProfileCookie(profileId);
   return result;
+}
+
+/** Points this browser at `profileId`: on the first save, and when a profile is linked from another device. */
+export async function setProfileCookie(profileId: string) {
+  // Behind a reverse proxy only x-forwarded-proto tells us whether the cookie can be Secure.
+  const proto = (await headers()).get("x-forwarded-proto")?.split(",")[0]?.trim();
+  (await cookies()).set(COOKIE, profileId, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: proto === "https",
+    maxAge: MAX_AGE,
+    path: "/",
+  });
 }
 
 export async function forgetProfile() {

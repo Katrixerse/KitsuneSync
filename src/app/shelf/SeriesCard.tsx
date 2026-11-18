@@ -103,14 +103,19 @@ export function SeriesCard({ series }: { series: ShelfSeries }) {
           <div className="mt-4 grid gap-3 border-t border-line pt-4 sm:grid-cols-2 lg:grid-cols-4">
             <label className="flex flex-col gap-1">
               <span className="label">Total volumes</span>
+              {/* Keyed on the saved value so the field resets after a re-sync or a failed save. */}
               <input
+                key={String(series.totalVolumes)}
                 className="input"
                 inputMode="numeric"
                 placeholder="unknown"
                 defaultValue={series.totalVolumes ?? ""}
                 onBlur={(e) => {
-                  const n = e.target.value ? Number(e.target.value) : null;
-                  upsertSeries(setTotalVolumes(series, n));
+                  const next = setTotalVolumes(series, e.target.value ? Number(e.target.value) : null);
+                  if (next.totalVolumes !== series.totalVolumes) upsertSeries(next);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
                 }}
               />
             </label>
@@ -168,10 +173,13 @@ export function SeriesCard({ series }: { series: ShelfSeries }) {
             <label className="flex flex-col gap-1 sm:col-span-2 lg:col-span-4">
               <span className="label">Notes</span>
               <input
+                key={series.notes}
                 className="input"
                 placeholder="Where you bought it, condition, signed copy…"
                 defaultValue={series.notes}
-                onBlur={(e) => upsertSeries({ ...series, notes: e.target.value })}
+                onBlur={(e) => {
+                  if (e.target.value !== series.notes) upsertSeries({ ...series, notes: e.target.value });
+                }}
               />
             </label>
           </div>

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AniListError, fetchLibrary, normalizeLibrary, type RawLibraryResponse } from "./client";
+import { ANILIST_ENDPOINT, AniListError, fetchLibrary, normalizeLibrary, type RawLibraryResponse } from "./client";
 
 function rawEntry(id: number, mediaId: number, overrides: Record<string, unknown> = {}) {
   return {
@@ -95,5 +95,27 @@ describe("fetchLibrary", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 })));
     const lib = await fetchLibrary("tester");
     expect(lib.anime).toHaveLength(2);
+  });
+
+  it("asks fetch to give up after a while and reports a timeout readably", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchLibrary("slow")).rejects.toMatchObject({
+      status: 504,
+      message: "AniList took too long to respond. Try again shortly.",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(ANILIST_ENDPOINT, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  });
+
+  it("maps an abort the same way", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new DOMException("Aborted", "AbortError")));
+    await expect(fetchLibrary("slow")).rejects.toBeInstanceOf(AniListError);
+  });
+
+  it("leaves other network errors alone", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+    const err = await fetchLibrary("offline").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err).not.toBeInstanceOf(AniListError);
   });
 });

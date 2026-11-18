@@ -52,7 +52,7 @@ const ANIME: Row[] = [
 
 const MANGA: Row[] = [
   ["Akira", "COMPLETED", 10, 120, 120, ["Action", "Horror", "Sci-Fi"], 1982, { volumes: 6, progressVolumes: 6, community: 88 }],
-  ["Berserk", "CURRENT", 9.5, 374, null, ["Action", "Drama", "Fantasy", "Horror"], 1989, { mediaStatus: "RELEASING", volumes: null, progressVolumes: 42, community: 93, color: "#861c1c" }],
+  ["Berserk", "CURRENT", 9.5, 374, null, ["Action", "Drama", "Fantasy", "Horror"], 1989, { mediaStatus: "RELEASING", volumes: 43, progressVolumes: 42, community: 93, color: "#861c1c" }],
   ["Ghost in the Shell", "COMPLETED", 8, 11, 11, ["Action", "Mecha", "Psychological", "Sci-Fi"], 1989, { volumes: 1, progressVolumes: 1, community: 76 }],
   ["BLAME!", "COMPLETED", 9, 65, 65, ["Action", "Horror", "Mystery", "Sci-Fi"], 1997, { volumes: 10, progressVolumes: 10, community: 80, color: "#5d6770" }],
   ["Pluto", "COMPLETED", 9, 65, 65, ["Drama", "Mystery", "Psychological", "Sci-Fi"], 2003, { volumes: 8, progressVolumes: 8, community: 86 }],
@@ -124,13 +124,17 @@ export function demoLibrary(now = new Date()): Library {
   };
 }
 
-/** A partly-filled shelf so the shelf and wishlist pages have something to show. */
+/**
+ * A partly-filled shelf so the shelf and wishlist pages have something to show.
+ * It looks like it was last synced one Berserk volume ago (AniList lists 43,
+ * the shelf knows 42), so applying the demo library raises one release alert.
+ */
 export function demoShelf(library: Library, now = new Date()): Shelf {
   const find = (title: string) => library.manga.find((e) => e.media.title === title);
   const plan: [string, (s: ReturnType<typeof seriesFromEntry>) => ReturnType<typeof seriesFromEntry>][] = [
     ["Akira", (s) => ({ ...ownFirst(s, 6), edition: "deluxe" })],
     ["BLAME!", (s) => ({ ...addVolumes(s, [1, 2, 3, 4, 6]), edition: "standard" })],
-    ["Berserk", (s) => ({ ...ownFirst(s, 38), totalVolumes: 42, edition: "standard" })],
+    ["Berserk", (s) => ({ ...ownFirst(s, 38), totalVolumes: 42, releasedVolumes: 42, edition: "standard" })],
     ["Chainsaw Man", (s) => addVolumes(s, [1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14])],
     ["Pluto", (s) => ownFirst(s, 8)],
     ["Monster", (s) => ({ ...addVolumes(s, [1, 2, 3, 4, 5, 6]), totalVolumes: 9, edition: "omnibus" })],

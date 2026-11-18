@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import type { Library } from "../anilist/types";
+import type { ReleaseAlert } from "../releases";
 import type { Edition, Shelf, ShelfSeries } from "../shelf";
 import { EMPTY_STATE, type KitsuneState } from "../state";
 import type { ManualWish, WishlistState } from "../wishlist";
@@ -18,11 +19,21 @@ interface ShelfRow {
   color: string | null;
   site_url: string | null;
   total_volumes: number | null;
+  released_volumes: number | null;
   owned: number[];
   edition: Edition;
   ongoing: boolean;
   notes: string;
   added_at: Date;
+}
+
+interface ReleaseRow {
+  media_id: number;
+  title: string;
+  cover: string | null;
+  color: string | null;
+  volumes: number[];
+  released_at: Date;
 }
 
 /** Creates the profile if needed and locks its row, so writes for one profile run one at a time. */
@@ -53,6 +64,11 @@ export async function loadState(db: Db, profileId: string): Promise<KitsuneState
     "SELECT key FROM wishlist_dismissed WHERE profile_id = $1 ORDER BY key",
     [profileId],
   );
+  // Newest first, the order mergeReleases in lib/releases.ts keeps as well.
+  const releases = await db.query<ReleaseRow>(
+    "SELECT * FROM release_alerts WHERE profile_id = $1 ORDER BY released_at DESC, media_id",
+    [profileId],
+  );
 
   return {
     ...EMPTY_STATE,
@@ -62,6 +78,14 @@ export async function loadState(db: Db, profileId: string): Promise<KitsuneState
       manual: manual.rows.map((row) => ({ id: row.id, title: row.title, note: row.note, addedAt: row.added_at.toISOString() })),
       dismissed: dismissed.rows.map((row) => row.key),
     },
+    releases: releases.rows.map((row) => ({
+      mediaId: row.media_id,
+      title: row.title,
+      cover: row.cover,
+      color: row.color,
+      volumes: row.volumes,
+      releasedAt: row.released_at.toISOString(),
+    })),
   };
 }
 
@@ -73,6 +97,7 @@ function rowToSeries(row: ShelfRow): ShelfSeries {
     color: row.color,
     siteUrl: row.site_url,
     totalVolumes: row.total_volumes,
+    releasedVolumes: row.released_volumes,
     owned: row.owned,
     edition: row.edition,
     ongoing: row.ongoing,
@@ -96,23 +121,66 @@ export async function saveLibrary(db: Db, profileId: string, library: Library | 
 export async function upsertSeries(db: Db, profileId: string, s: ShelfSeries) {
   await db.query(
     `INSERT INTO shelf_series
-       (profile_id, media_id, title, cover, color, site_url, total_volumes, owned, edition, ongoing, notes, added_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       (profile_id, media_id, title, cover, color, site_url, total_volumes, released_volumes, owned, edition, ongoing,
+        notes, added_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      ON CONFLICT (profile_id, media_id) DO UPDATE SET
        title = EXCLUDED.title, cover = EXCLUDED.cover, color = EXCLUDED.color, site_url = EXCLUDED.site_url,
-       total_volumes = EXCLUDED.total_volumes, owned = EXCLUDED.owned, edition = EXCLUDED.edition,
-       ongoing = EXCLUDED.ongoing, notes = EXCLUDED.notes`,
-    [profileId, s.mediaId, s.title, s.cover, s.color, s.siteUrl, s.totalVolumes, s.owned, s.edition, s.ongoing, s.notes, s.addedAt],
+       total_volumes = EXCLUDED.total_volumes, released_volumes = EXCLUDED.released_volumes, owned = EXCLUDED.owned,
+       edition = EXCLUDED.edition, ongoing = EXCLUDED.ongoing, notes = EXCLUDED.notes`,
+    [
+      profileId, s.mediaId, s.title, s.cover, s.color, s.siteUrl, s.totalVolumes, s.releasedVolumes, s.owned, s.edition,
+      s.ongoing, s.notes, s.addedAt,
+    ],
   );
 }
 
+/** Removes a series from the shelf, and the release alert for it: an alert for a series you no longer collect is noise. */
 export async function deleteSeries(db: Db, profileId: string, mediaId: number) {
   await db.query("DELETE FROM shelf_series WHERE profile_id = $1 AND media_id = $2", [profileId, mediaId]);
+  await dismissRelease(db, profileId, mediaId);
 }
 
+/** Series on the shelf, leaving out `except` so an update of an existing series doesn't count as a new one. */
+export async function countSeries(db: Db, profileId: string, except?: number): Promise<number> {
+  const { rows } = await db.query<{ n: number }>(
+    // IS DISTINCT FROM treats a missing `except` (null) as "count everything".
+    "SELECT count(*)::int AS n FROM shelf_series WHERE profile_id = $1 AND media_id IS DISTINCT FROM $2",
+    [profileId, except ?? null],
+  );
+  return rows[0].n;
+}
+
+/** Replaces the whole shelf in two statements: one delete, one insert of every row. */
 export async function replaceShelf(db: Db, profileId: string, shelf: Shelf) {
   await db.query("DELETE FROM shelf_series WHERE profile_id = $1", [profileId]);
-  for (const series of Object.values(shelf)) await upsertSeries(db, profileId, series);
+  const rows = Object.values(shelf).map((s) => ({
+    media_id: s.mediaId,
+    title: s.title,
+    cover: s.cover,
+    color: s.color,
+    site_url: s.siteUrl,
+    total_volumes: s.totalVolumes,
+    released_volumes: s.releasedVolumes,
+    owned: s.owned,
+    edition: s.edition,
+    ongoing: s.ongoing,
+    notes: s.notes,
+    added_at: s.addedAt,
+  }));
+  if (!rows.length) return;
+  await db.query(
+    `INSERT INTO shelf_series
+       (profile_id, media_id, title, cover, color, site_url, total_volumes, released_volumes, owned, edition, ongoing,
+        notes, added_at)
+     SELECT $1::uuid, x.media_id, x.title, x.cover, x.color, x.site_url, x.total_volumes, x.released_volumes, x.owned,
+       x.edition, x.ongoing, x.notes, x.added_at
+     FROM jsonb_to_recordset($2::jsonb) AS x(
+       media_id integer, title text, cover text, color text, site_url text, total_volumes integer,
+       released_volumes integer, owned integer[], edition text, ongoing boolean, notes text, added_at timestamptz
+     )`,
+    [profileId, JSON.stringify(rows)],
+  );
 }
 
 export async function addManualWish(db: Db, profileId: string, wish: ManualWish) {
@@ -127,6 +195,15 @@ export async function deleteManualWish(db: Db, profileId: string, id: string) {
   await db.query("DELETE FROM wishlist_manual WHERE profile_id = $1 AND id = $2", [profileId, id]);
 }
 
+/** Hand-added wishes, leaving out `except` so re-adding an existing one doesn't count as a new one. */
+export async function countManualWishes(db: Db, profileId: string, except?: string): Promise<number> {
+  const { rows } = await db.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM wishlist_manual WHERE profile_id = $1 AND id IS DISTINCT FROM $2::uuid",
+    [profileId, except ?? null],
+  );
+  return rows[0].n;
+}
+
 export async function dismissKey(db: Db, profileId: string, key: string) {
   await db.query(
     "INSERT INTO wishlist_dismissed (profile_id, key) VALUES ($1, $2) ON CONFLICT DO NOTHING",
@@ -134,13 +211,104 @@ export async function dismissKey(db: Db, profileId: string, key: string) {
   );
 }
 
+/** Hidden wishlist items, leaving out `except` so hiding the same item again doesn't count as a new one. */
+export async function countDismissed(db: Db, profileId: string, except?: string): Promise<number> {
+  const { rows } = await db.query<{ n: number }>(
+    "SELECT count(*)::int AS n FROM wishlist_dismissed WHERE profile_id = $1 AND key IS DISTINCT FROM $2",
+    [profileId, except ?? null],
+  );
+  return rows[0].n;
+}
+
 export async function clearDismissed(db: Db, profileId: string) {
   await db.query("DELETE FROM wishlist_dismissed WHERE profile_id = $1", [profileId]);
 }
 
+/** Replaces the wishlist: one delete and one insert per table. */
 export async function replaceWishlist(db: Db, profileId: string, wishlist: WishlistState) {
   await db.query("DELETE FROM wishlist_manual WHERE profile_id = $1", [profileId]);
   await clearDismissed(db, profileId);
-  for (const wish of wishlist.manual) await addManualWish(db, profileId, wish);
-  for (const key of wishlist.dismissed) await dismissKey(db, profileId, key);
+  if (wishlist.manual.length) {
+    const rows = wishlist.manual.map((w) => ({ id: w.id, title: w.title, note: w.note, added_at: w.addedAt }));
+    await db.query(
+      `INSERT INTO wishlist_manual (profile_id, id, title, note, added_at)
+       SELECT $1::uuid, x.id, x.title, x.note, x.added_at
+       FROM jsonb_to_recordset($2::jsonb) AS x(id uuid, title text, note text, added_at timestamptz)
+       ON CONFLICT (profile_id, id) DO NOTHING`,
+      [profileId, JSON.stringify(rows)],
+    );
+  }
+  if (wishlist.dismissed.length) {
+    await db.query(
+      `INSERT INTO wishlist_dismissed (profile_id, key)
+       SELECT $1::uuid, value FROM jsonb_array_elements_text($2::jsonb)
+       ON CONFLICT DO NOTHING`,
+      [profileId, JSON.stringify(wishlist.dismissed)],
+    );
+  }
+}
+
+/** Replaces the release alerts in two statements: one delete, one insert of every row. */
+export async function replaceReleases(db: Db, profileId: string, releases: ReleaseAlert[]) {
+  await db.query("DELETE FROM release_alerts WHERE profile_id = $1", [profileId]);
+  if (!releases.length) return;
+  const rows = releases.map((r) => ({
+    media_id: r.mediaId,
+    title: r.title,
+    cover: r.cover,
+    color: r.color,
+    volumes: r.volumes,
+    released_at: r.releasedAt,
+  }));
+  await db.query(
+    `INSERT INTO release_alerts (profile_id, media_id, title, cover, color, volumes, released_at)
+     SELECT $1::uuid, x.media_id, x.title, x.cover, x.color, x.volumes, x.released_at
+     FROM jsonb_to_recordset($2::jsonb) AS x(
+       media_id integer, title text, cover text, color text, volumes integer[], released_at timestamptz
+     )`,
+    [profileId, JSON.stringify(rows)],
+  );
+}
+
+export async function dismissRelease(db: Db, profileId: string, mediaId: number) {
+  await db.query("DELETE FROM release_alerts WHERE profile_id = $1 AND media_id = $2", [profileId, mediaId]);
+}
+
+/** Drops the alerts for every series not in `keepMediaIds`, e.g. after an import replaced the shelf. */
+export async function pruneReleases(db: Db, profileId: string, keepMediaIds: number[]) {
+  await db.query("DELETE FROM release_alerts WHERE profile_id = $1 AND media_id <> ALL($2::int[])", [
+    profileId,
+    keepMediaIds,
+  ]);
+}
+
+/** Stores a one-time link code for the profile, replacing any earlier one so only the newest can be redeemed. */
+export async function createLinkCode(db: Db, profileId: string, code: string, expiresAt: Date) {
+  await db.query("DELETE FROM link_codes WHERE profile_id = $1", [profileId]);
+  await db.query("INSERT INTO link_codes (code, profile_id, expires_at) VALUES ($1, $2, $3)", [code, profileId, expiresAt]);
+}
+
+/**
+ * Redeems a link code: returns its profile and deletes it, or null when the code is
+ * unknown, has expired, or was used up or replaced meanwhile. Call inside a
+ * transaction. The profile row is locked (touched) before the code row goes, the
+ * order createLinkCode takes them in under withProfile, so a code redeemed while
+ * its owner asks for a new one waits instead of deadlocking.
+ */
+export async function consumeLinkCode(db: Db, code: string, now = new Date()): Promise<string | null> {
+  const { rows } = await db.query<{ profile_id: string }>(
+    "SELECT profile_id FROM link_codes WHERE code = $1 AND expires_at > $2",
+    [code, now],
+  );
+  if (!rows.length) return null;
+  await touchProfile(db, rows[0].profile_id);
+  // The delete is the claim: of two redemptions of one code, the second deletes nothing.
+  const { rowCount } = await db.query("DELETE FROM link_codes WHERE code = $1 AND expires_at > $2", [code, now]);
+  return rowCount ? rows[0].profile_id : null;
+}
+
+/** Drops codes past their expiry (redeeming ignores them anyway) and returns how many went. */
+export async function deleteExpiredLinkCodes(db: Db): Promise<number> {
+  const { rowCount } = await db.query("DELETE FROM link_codes WHERE expires_at <= now()");
+  return rowCount ?? 0;
 }

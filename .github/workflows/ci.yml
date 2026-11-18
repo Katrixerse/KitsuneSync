@@ -2,7 +2,17 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+
+# Nothing here writes to the repository, so the token is read-only.
+permissions:
+  contents: read
+
+# A new push to the same branch or PR cancels the run still going for the old commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -34,6 +44,15 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # The smoke tests run against the build above (playwright.config.ts starts the server, CI set means no rebuild).
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
 
   docker:
     runs-on: ubuntu-latest

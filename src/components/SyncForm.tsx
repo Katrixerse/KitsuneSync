@@ -2,7 +2,9 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { loadDemo, syncFromAniList } from "@/lib/store";
+import type { Library } from "@/lib/anilist/types";
+import type { Shelf } from "@/lib/shelf";
+import { loadDemo, syncFromAniList, useKitsune } from "@/lib/store";
 
 interface SyncFormProps {
   defaultUser?: string;
@@ -11,8 +13,21 @@ interface SyncFormProps {
   showDemo?: boolean;
 }
 
+/**
+ * The question to confirm before syncing another account over a shelf built
+ * from the current one, or null when the switch needs no confirmation.
+ */
+export function accountSwitchWarning(library: Library | null, shelf: Shelf, userName: string): string | null {
+  const count = Object.keys(shelf).length;
+  if (!library || library.demo || !count) return null;
+  const from = library.user.name;
+  if (from.toLowerCase() === userName.toLowerCase()) return null;
+  return `Your shelf has ${count} series synced from @${from}. Switch to @${userName} and keep the shelf? (You can clear everything in Settings.)`;
+}
+
 export function SyncForm({ defaultUser = "", redirectTo, showDemo = true }: SyncFormProps) {
   const router = useRouter();
+  const { library, shelf } = useKitsune();
   const [user, setUser] = useState(defaultUser);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,6 +36,8 @@ export function SyncForm({ defaultUser = "", redirectTo, showDemo = true }: Sync
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!user.trim()) return;
+    const warning = accountSwitchWarning(library, shelf, user.trim());
+    if (warning && !confirm(warning)) return;
     setBusy(true);
     setError(null);
     setDone(null);
