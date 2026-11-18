@@ -19,17 +19,30 @@ export class RateLimiter {
 
   /** Records a hit for `key` and reports whether it is within the limit. Refused hits don't count. */
   allow(key: string): boolean {
+    return this.allowAll([key]);
+  }
+
+  /**
+   * One request that belongs to several buckets: charges every key, or none
+   * when any of them is spent, so a refusal in one bucket doesn't eat the others.
+   */
+  allowAll(keys: string[]): boolean {
     const now = this.now();
-    const recent = (this.hits.get(key) ?? []).filter((t) => t > now - this.windowMs);
-    if (recent.length >= this.limit) {
-      // Keep the pruned list in place, so the map's order still follows the newest hit.
-      this.hits.set(key, recent);
+    const recent = keys.map((key) => (this.hits.get(key) ?? []).filter((t) => t > now - this.windowMs));
+    if (recent.some((times) => times.length >= this.limit)) {
+      // Keep the pruned lists in place, so the map's order still follows the newest hit. A key
+      // this limiter has never seen stays unknown: a refusal must not grow the map.
+      keys.forEach((key, i) => {
+        if (recent[i].length) this.hits.set(key, recent[i]);
+      });
       return false;
     }
-    recent.push(now);
-    // Re-insert so this key moves to the end and the map stays ordered by newest hit.
-    this.hits.delete(key);
-    this.hits.set(key, recent);
+    keys.forEach((key, i) => {
+      recent[i].push(now);
+      // Re-insert so this key moves to the end and the map stays ordered by newest hit.
+      this.hits.delete(key);
+      this.hits.set(key, recent[i]);
+    });
     this.prune(now);
     return true;
   }

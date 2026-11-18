@@ -7,6 +7,7 @@ import {
   completion,
   gapVolumes,
   isComplete,
+  manualMediaId,
   seriesFromEntry,
   shelfStats,
   type Shelf,
@@ -113,7 +114,7 @@ function AddSeries({ library, shelf }: { library: Library; shelf: Shelf }) {
     if (!title.trim()) return;
     const n = Number(total);
     upsertSeries({
-      mediaId: -Date.now(),
+      mediaId: manualMediaId(shelf),
       title: title.trim(),
       cover: null,
       color: null,

@@ -6,6 +6,8 @@ import {
   gapVolumes,
   isComplete,
   knownVolumes,
+  manualMediaId,
+  MAX_MEDIA_ID,
   nextVolumes,
   ownFirst,
   parseRanges,
@@ -94,6 +96,24 @@ describe("volumes", () => {
       2: series({ mediaId: 2, owned: [1, 4] }),
     });
     expect(stats).toEqual({ series: 2, volumes: 4, complete: 1, gaps: 2 });
+  });
+});
+
+describe("manualMediaId", () => {
+  it("is negative, fits a 32-bit integer column and is never zero", () => {
+    expect(manualMediaId({}, () => 0)).toBe(-1);
+    expect(manualMediaId({}, () => 1 - 1e-12)).toBe(-MAX_MEDIA_ID);
+    for (let i = 0; i < 1000; i++) {
+      const id = manualMediaId({});
+      expect(Number.isInteger(id) && id < 0 && id >= -MAX_MEDIA_ID).toBe(true);
+    }
+  });
+
+  it("skips ids already on the shelf", () => {
+    const draws = [0, 0, 0.5];
+    const id = manualMediaId({ [-1]: series({ mediaId: -1 }) }, () => draws.shift() ?? 0.5);
+    expect(id).not.toBe(-1);
+    expect(draws).toEqual([]);
   });
 });
 

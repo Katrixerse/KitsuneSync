@@ -51,3 +51,41 @@ test("raising the total adds volume slots and survives a reload", async ({ page 
   await expect(slots).toHaveCount(12);
   await expect(card).toContainText("6 / 12 vol");
 });
+
+test("adding a series by hand is saved and survives a reload", async ({ page }) => {
+  await page.getByRole("button", { name: "not on AniList? add by hand" }).click();
+  const form = page.locator("form").filter({ has: page.getByLabel("Title") });
+  await form.getByLabel("Title").fill("Art book");
+  await form.getByLabel("Total volumes").fill("3");
+  await saved(page, () => form.getByRole("button", { name: "Add" }).click());
+
+  const card = seriesCard(page, "Art book");
+  await expect(card).toBeVisible();
+  await expect(card.getByRole("group", { name: "Art book volumes" }).getByRole("button")).toHaveCount(3);
+
+  await page.reload();
+  await expect(seriesCard(page, "Art book")).toBeVisible();
+  await expect(seriesCard(page, "Art book").getByRole("group", { name: "Art book volumes" }).getByRole("button")).toHaveCount(3);
+});
+
+test("leaving a field unchanged saves nothing", async ({ page }) => {
+  const card = seriesCard(page, "Monster");
+  await card.getByRole("button", { name: "edit", exact: true }).click();
+  const posts: string[] = [];
+  page.on("request", (req) => {
+    if (req.method() === "POST" && "next-action" in req.headers()) posts.push(req.url());
+  });
+
+  const total = card.getByLabel("Total volumes");
+  await expect(total).toHaveValue("9");
+  await total.focus();
+  await total.blur();
+  const notes = card.getByLabel("Notes");
+  await notes.focus();
+  await notes.press("Enter");
+  await notes.blur();
+
+  // Give a stray save time to go out before deciding none did.
+  await page.waitForTimeout(500);
+  expect(posts).toEqual([]);
+});

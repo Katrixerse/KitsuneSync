@@ -1,5 +1,5 @@
 import { LINK_CODE_ALPHABET, LINK_CODE_LENGTH, normalizeLinkCode } from "./link-code";
-import { EDITION_LABELS, MAX_VOLUMES, type Edition, type Shelf, type ShelfSeries } from "./shelf";
+import { EDITION_LABELS, MAX_MEDIA_ID, MAX_VOLUMES, type Edition, type Shelf, type ShelfSeries } from "./shelf";
 import type { ManualWish, WishlistState } from "./wishlist";
 
 /**
@@ -21,8 +21,6 @@ const SITE_PREFIX = "https://anilist.co/";
 // AniList cover colours are 6-digit hex.
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 const LINK_CODE = new RegExp(`^[${LINK_CODE_ALPHABET}]{${LINK_CODE_LENGTH}}$`);
-// media_id columns are 32-bit integers; AniList ids are far smaller, hand-added series use small negative ones.
-const MAX_MEDIA_ID = 2_147_483_647;
 
 export function isUuid(value: unknown): value is string {
   return typeof value === "string" && UUID.test(value);

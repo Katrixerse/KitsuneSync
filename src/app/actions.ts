@@ -47,9 +47,9 @@ async function limitKeys(): Promise<string[]> {
   return [`ip:${ip || "unknown"}`, ...(profileId ? [`profile:${profileId}`] : [])];
 }
 
-/** Counts the request in every bucket it belongs to, and refuses it when any of them is spent. */
+/** Counts the request in every bucket it belongs to, or in none when any of them is spent. */
 async function allow(limiter: RateLimiter): Promise<boolean> {
-  return (await limitKeys()).map((key) => limiter.allow(key)).every(Boolean);
+  return limiter.allowAll(await limitKeys());
 }
 
 /** A library from the one-minute cache when there is one, else freshly fetched. The demo never touches AniList. */

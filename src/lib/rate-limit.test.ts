@@ -46,6 +46,22 @@ describe("RateLimiter", () => {
     expect(limiter.allow("a")).toBe(true);
   });
 
+  it("charges several buckets together, or none when one is spent", () => {
+    const c = clock();
+    const limiter = new RateLimiter(2, 1000, 100, c.now);
+    expect(limiter.allowAll(["ip", "profile"])).toBe(true);
+    limiter.allow("ip"); // the shared address is now spent
+    expect(limiter.allowAll(["ip", "profile"])).toBe(false);
+    // The refusal didn't count against the profile: it still has one hit left.
+    expect(limiter.allow("profile")).toBe(true);
+    expect(limiter.allow("profile")).toBe(false);
+    // Nor does a refusal remember keys it has never allowed.
+    expect(limiter.allowAll(["ip", "forged"])).toBe(false);
+    expect(limiter.size).toBe(2);
+    c.tick(1001);
+    expect(limiter.allowAll(["ip", "profile"])).toBe(true);
+  });
+
   it("forgets idle keys and caps how many it remembers", () => {
     const c = clock();
     const limiter = new RateLimiter(5, 1000, 3, c.now);
